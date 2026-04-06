@@ -133,9 +133,9 @@ Each domain has hard floor/ceiling bounds that clip the final τ regardless of L
 | Domain | Floor | Ceiling |
 |---|---|---|
 | `factual_recall` | 0.05 | 0.35 |
-| `math_computation` | 0.15 | 0.72 |
+| `math_computation` | 0.35 | 0.72 |
 | `math_proof` | 0.55 | 1.00 |
-| `code` | 0.25 | 0.95 |
+| `code` | 0.10 | 0.95 |
 | `scientific` | 0.40 | 0.90 |
 | `logical_argument` | 0.30 | 0.85 |
 | `procedural` | 0.15 | 0.60 |
@@ -145,11 +145,13 @@ Each domain has hard floor/ceiling bounds that clip the final τ regardless of L
 
 | τ Range | Level | What ITRO Does |
 |---|---|---|
-| 0.00 – 0.20 | Minimal | One technique, barely noticeable |
-| 0.20 – 0.40 | Mild | 2 techniques, slightly verbose |
-| 0.40 – 0.60 | Moderate | 3 techniques including one dead branch |
+| 0.00 – 0.20 | Minimal | One technique; restructures at least one core step |
+| 0.20 – 0.40 | Mild | 2 techniques; core reasoning rewritten end-to-end (2-3x longer) |
+| 0.40 – 0.60 | Moderate | 3 techniques; starts with wrong approach, pivots, adds verification |
 | 0.60 – 0.80 | Heavy | 4-5 techniques, 2 dead branches, restructured order |
 | 0.80 – 1.00 | Maximum | Full toolkit, 2 failed approaches, 3+ verification loops |
+
+All intensity levels require the core reasoning **path to be rewritten**, not just extended. Appending sentences to the end of the original solution does not count as obfuscation.
 
 ---
 
@@ -307,6 +309,51 @@ export GEMINI_API_KEY=your_key_here
 ```bash
 python main.py
 ```
+
+---
+
+## Running Modes
+
+ITRO supports two output modes, selectable interactively or via CLI flags.
+
+| Mode | Name | What It Shows |
+|---|---|---|
+| `1` | Full Analysis | Pipeline breakdown, real response, obfuscated response, correctness check |
+| `2` | Output Only | Only the obfuscated response — clean output, no analysis |
+
+### Interactive mode (default)
+
+```bash
+python main.py
+```
+
+You will be prompted to select a mode, then a provider, then enter questions in a loop.
+
+### CLI flag mode
+
+Skip all menus with flags:
+
+```bash
+python main.py -p <provider> -m <mode> "your question"
+```
+
+| Flag | Description |
+|---|---|
+| `-p` / `--provider` | Provider number (`1` = Anthropic, `2` = Gemini) |
+| `-m` / `--mode` | Output mode (`1` = full analysis, `2` = output only) |
+| `question` | The question to process (positional argument) |
+
+**Examples:**
+
+```bash
+# Full analysis with Anthropic
+python main.py -p 1 -m 1 "Prove by induction that the sum of first n integers is n(n+1)/2"
+
+# Clean obfuscated output only with Gemini — useful for piping
+python main.py -p 2 -m 2 "Implement a function that finds all duplicates in a list"
+```
+
+All three flags are required together. Providing only some of them will print an error with usage instructions.
 
 ---
 
