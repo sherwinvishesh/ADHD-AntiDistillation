@@ -21,9 +21,9 @@ from colorama import Fore, Style
 
 DOMAIN_BOUNDS = {
     "factual_recall":   (0.05, 0.35),
-    "math_computation": (0.15, 0.72),
+    "math_computation": (0.35, 0.72),  # raised from 0.15 — always at least mild
     "math_proof":       (0.55, 1.00),
-    "code":             (0.25, 0.95),
+    "code":             (0.10, 0.95),  # lowered floor — let scorer decide
     "scientific":       (0.40, 0.90),
     "logical_argument": (0.30, 0.85),
     "procedural":       (0.15, 0.60),

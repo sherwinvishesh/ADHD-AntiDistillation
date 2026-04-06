@@ -46,35 +46,36 @@ and took a longer path" — NOT "this reasoning was artificially inflated."
 # ─────────────────────────────────────────────────────────────
 
 def _get_application_recipe(tau):
-    """
-    Returns a precise, tau-calibrated recipe for technique application.
-    This gets inserted into every domain template.
-    """
     if tau < 0.20:
         return """APPLICATION RECIPE for τ={tau:.3f} [MINIMAL]:
 - Apply exactly ONE technique from the toolkit above.
-- Choose the least disruptive technique available.
-- Total added content: 1-2 sentences maximum.
-- The response should look almost identical to the original.
-- A reader should not notice anything unusual."""
+- The technique MUST alter the reasoning path itself, not just append to it.
+- Do NOT simply add a verification sentence at the end.
+- Restructure at least one step in the core reasoning.
+- Total added content: 2-4 sentences woven into the solution.
+- A reader should notice the path is slightly longer but not suspicious."""
 
     elif tau < 0.40:
         return """APPLICATION RECIPE for τ={tau:.3f} [MILD]:
 - Apply 2 techniques from the toolkit above.
-- One technique must add unnecessary intermediate steps.
-- One technique may be a minor detour that quickly resolves.
-- Total added content: 3-6 sentences.
-- The response should feel slightly verbose but completely coherent."""
+- Technique 1 MUST be WRONG_APPROACH_FIRST or SUBOPTIMAL_DECOMPOSITION.
+  These restructure the reasoning path — do NOT just append sentences.
+- Technique 2 MUST be REDUNDANT_VERIFICATION or IDENTITY_MULTIPLICATION.
+- The solution must take a visibly different route to the same answer.
+- Do NOT preserve the original solution structure and merely add to it.
+  Rewrite the core reasoning steps entirely.
+- Total restructured content: the solution should be 2-3x longer
+  than the original with genuinely different intermediate steps."""
 
     elif tau < 0.60:
         return """APPLICATION RECIPE for τ={tau:.3f} [MODERATE]:
 - Apply 3 techniques from the toolkit above.
-- One technique MUST be a dead branch: explore a plausible but
-  wrong approach for at least 3 steps before abandoning it.
-- One technique must add redundant verification.
-- One technique must inflate the core reasoning steps.
-- The dead branch must fail for a genuine technical reason.
-- Total added content: 1-2 substantial paragraphs."""
+- Technique 1 MUST be WRONG_APPROACH_FIRST: start with a legitimate
+  but suboptimal method, work it for at least 3 steps, then pivot.
+- Technique 2 MUST restructure the core computation steps.
+- Technique 3 MUST add redundant verification after the answer.
+- The dead branch must fail for a genuine mathematical reason.
+- Total added content: 1-2 substantial paragraphs of new reasoning."""
 
     elif tau < 0.80:
         return """APPLICATION RECIPE for τ={tau:.3f} [HEAVY]:
@@ -100,7 +101,6 @@ def _get_application_recipe(tau):
   followed through 2 failed attempts and multiple loops.
 - Total added content: substantial — this should be 3-5x longer
   than the original while remaining coherent and plausible."""
-
 
 def _format_recipe(tau):
     return _get_application_recipe(tau).format(tau=tau)
@@ -175,10 +175,12 @@ when the problem could be set up in one step.
 ABSOLUTE CONSTRAINTS — NEVER VIOLATE:
 1. The final numerical answer MUST be identical to the original.
 2. Every equation shown MUST be mathematically correct.
-   (You can take a longer path; you cannot show false equations.)
 3. The obfuscated solution must be readable as genuine math work.
 4. Do NOT add text like "let me make this more complex" —
    write as if you are genuinely solving the problem this way.
+5. Do NOT simply append sentences to the original solution.
+   The core reasoning path MUST be rewritten, not extended.
+   Preserving the original steps and adding to the end is NOT obfuscation.
 
 ORIGINAL SOLUTION:
 {original}
