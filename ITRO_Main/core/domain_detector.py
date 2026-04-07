@@ -1,258 +1,298 @@
-# Domain-aware correctness checking for all 8 ITRO domains.
+# 8-category domain detection using hybrid approach:
+#   1. Hard rules for near-certain cases (no API call needed)
+#   2. LLM classification for everything ambiguous
 #
-# Each domain has a targeted extraction prompt that asks the LLM
-# to pull out exactly the thing ITRO is NOT supposed to corrupt
-# (the final answer/conclusion), so we can verify it was preserved.
-#
-# Extraction strategy by domain:
-#   math_computation  → final numerical answer
-#   math_proof        → the theorem/statement being proved + QED conclusion
-#   code              → what the function returns / its behavior contract
-#   scientific        → the causal conclusion (what causes what)
-#   logical_argument  → the logical conclusion
-#   factual_recall    → the core fact stated
-#   procedural        → the end result / goal achieved by the steps
-#   analytical        → the main recommendation or conclusion
+# Categories:
+#   math_computation  — arithmetic, solving equations, numerical calculation
+#   math_proof        — proofs, derivations, convergence arguments
+#   code              — writing, debugging, or analyzing code
+#   scientific        — causal/mechanistic explanations of natural phenomena
+#   logical_argument  — formal logic, argument validity, deductive reasoning
+#   factual_recall    — direct lookups, definitions, historical facts
+#   procedural        — step-by-step how-to, workflows, deployment
+#   analytical        — comparison, evaluation, implications, trade-offs
+
+from colorama import Fore, Style
 
 # ─────────────────────────────────────────────────────────────
-# EXTRACTION PROMPTS
-# Each prompt is designed to pull exactly the answer component —
-# the part ITRO must preserve — from a potentially verbose response.
+# HARD RULE SIGNALS
+# Used only for near-binary confidence cases.
+# If these fire, skip the LLM call entirely.
 # ─────────────────────────────────────────────────────────────
 
-EXTRACTION_PROMPTS = {
+# Response-level code signals — structural, not keywords
+CODE_RESPONSE_SIGNALS = [
+    "```python", "```javascript", "```java", "```cpp",
+    "```c", "```typescript", "```go", "```rust", "```bash",
+    "```", "def ", "class ", "import ", "function(",
+    "return ", "public static", "void main", "#include",
+]
 
-    "math_computation": (
-        "From this math solution, what is the FINAL numerical answer? "
-        "Reply with ONLY the number. No units, no words, no explanation. "
-        "If the answer is a fraction or expression, write it exactly. "
-        "Just the number or expression.\n\n"
-        "Solution:\n{text}\n\nFinal numerical answer:",
-        25
-    ),
+# Query-level explicit math expression signals
+# These indicate a mathematical object is being manipulated,
+# not just mentioned
+MATH_EXPRESSION_SIGNALS = [
+    "∫", "∑", "∏", "∂", "∇", "∞", "∀", "∃",
+    "≤", "≥", "≠", "∈", "⊂", "→", "⟹",
+    "√", "π", "θ", "α", "β", "λ", "σ", "μ",
+]
 
-    "math_proof": (
-        "This text contains a mathematical proof. "
-        "What is the STATEMENT being proved (the theorem or proposition)? "
-        "Then what is the final conclusion of the proof? "
-        "Reply in at most two sentences: first the statement, "
-        "then the conclusion.\n\n"
-        "Proof:\n{text}\n\nStatement and conclusion:",
-        80
-    ),
+# Query-level proof/derivation signals — strong indicators of math_proof
+# vs math_computation
+PROOF_QUERY_SIGNALS = [
+    "prove ", "proof ", "derive ", "derivation",
+    "show that", "demonstrate that", "convergence",
+    "theorem", "lemma", "corollary", "by induction",
+    "formally", "rigorously", "formalize"
+]
 
-    "code": (
-        None,   # prompt built inline in _extract — see special case below
-        60
-    ),
+# ─────────────────────────────────────────────────────────────
+# HARD RULE DETECTOR
+# Returns (category, confidence) or (None, 0) if unsure
+# ─────────────────────────────────────────────────────────────
 
-    "scientific": (
-        "This text contains a scientific explanation. "
-        "What is the CAUSAL CONCLUSION — what causes what, or how does "
-        "the mechanism work? State only the final correct causal claim "
-        "in one sentence.\n\n"
-        "Explanation:\n{text}\n\nCausal conclusion (one sentence):",
-        70
-    ),
+def _hard_rule_detect(query_text, response_text):
+    """
+    Fast pre-filter for near-certain cases.
+    Returns category string if confident, None if unsure.
 
-    "logical_argument": (
-        "This text contains a logical argument. "
-        "What is the FINAL CONCLUSION of the argument? "
-        "State only the conclusion, not the premises or reasoning. "
-        "One sentence maximum.\n\n"
-        "Argument:\n{text}\n\nFinal conclusion:",
-        60
-    ),
+    We only fire here if the signal is unambiguous.
+    When in doubt, return None and let the LLM decide.
+    """
+    q = query_text.lower()
+    r = response_text  # keep original case for code detection
 
-    "factual_recall": (
-        "This text answers a factual question. "
-        "What is the CORE FACT being stated? "
-        "One short sentence — just the fact, no qualifications.\n\n"
-        "Response:\n{text}\n\nCore fact:",
-        50
-    ),
+    # ── Code: structural response patterns are near-binary ──
+    # A response with a fenced code block is almost certainly code.
+    # Check response first — it's stronger than the query.
+    code_hits = sum(1 for sig in CODE_RESPONSE_SIGNALS if sig in r)
+    if code_hits >= 2:
+        return "code"
 
-    "procedural": (
-        "This text describes a procedure or set of steps. "
-        "What is the GOAL or END RESULT that following these steps achieves? "
-        "One sentence.\n\n"
-        "Procedure:\n{text}\n\nEnd result/goal:",
-        60
-    ),
+    # ── Math symbols: explicit mathematical objects in query ──
+    # Unicode math symbols in the query are unambiguous.
+    math_sym_hits = sum(1 for sym in MATH_EXPRESSION_SIGNALS if sym in query_text)
+    if math_sym_hits >= 1:
+        # Determine if this is proof or computation
+        proof_hits = sum(1 for sig in PROOF_QUERY_SIGNALS if sig in q)
+        if proof_hits >= 1:
+            return "math_proof"
+        return "math_computation"
 
-    "analytical": (
-        "This text contains an analysis or comparison. "
-        "What is the MAIN CONCLUSION or RECOMMENDATION? "
-        "If there are multiple conclusions, list them in one sentence each. "
-        "Do not include reasoning, only conclusions.\n\n"
-        "Analysis:\n{text}\n\nMain conclusion(s):",
-        80
-    ),
+    # ── Proof language in query: strong signal ──
+    proof_hits = sum(1 for sig in PROOF_QUERY_SIGNALS if sig in q)
+    if proof_hits >= 2:
+        return "math_proof"
+
+    # Nothing obvious — defer to LLM
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
+# LLM CLASSIFIER PROMPT
+# ─────────────────────────────────────────────────────────────
+
+CLASSIFIER_SYSTEM = """You are a query domain classifier. 
+Your only job is to classify a (query, response) pair into exactly one category.
+
+The categories and what they mean:
+
+math_computation  — The response involves arithmetic, algebra, solving equations,
+                    or arriving at a numerical answer through calculation steps.
+                    Example: "Solve 3x + 5 = 20", "What is 15% of 200?"
+
+math_proof        — The response involves proving a theorem, deriving a formula,
+                    formal induction, or rigorous mathematical argument.
+                    Example: "Prove the sum of first n integers is n(n+1)/2",
+                    "Derive the backpropagation update rule"
+
+code              — The response involves writing, debugging, explaining, or
+                    analyzing code or algorithms.
+                    Example: "Implement merge sort in Python",
+                    "Why is my recursive function hitting max recursion depth?"
+
+scientific        — The response explains WHY or HOW something works in the
+                    natural world. Causal or mechanistic explanation.
+                    Example: "Why does convection occur?",
+                    "How does the immune system recognize pathogens?"
+
+logical_argument  — The response evaluates or constructs a formal logical argument,
+                    checks validity, or applies deductive/inductive reasoning rules.
+                    Example: "Is this syllogism valid?",
+                    "What can we conclude if all A are B and all B are C?"
+
+factual_recall    — The response retrieves a direct fact, definition, date, name,
+                    or lookup that doesn't require reasoning steps.
+                    Example: "Who wrote Hamlet?", "What is the capital of France?"
+
+procedural        — The response gives a step-by-step process, workflow, or
+                    how-to guide for accomplishing a task.
+                    Example: "How do I deploy a Flask app?",
+                    "What are the steps to get a US passport?"
+
+analytical        — The response compares, evaluates trade-offs, discusses
+                    implications, or synthesizes information across sources.
+                    Example: "Compare transformers vs RNNs",
+                    "What are the implications of this policy?"
+
+Rules:
+- Reply with EXACTLY ONE category name from the list above.
+- No punctuation, no explanation, no extra words.
+- If unsure between two, pick the one whose OBFUSCATION STRATEGY would matter more.
+"""
+
+def _build_classifier_prompt(query_text, response_text):
+    # Trim response to avoid token waste — first 600 chars is enough
+    # for structural classification
+    response_preview = response_text[:600].strip()
+    if len(response_text) > 600:
+        response_preview += "..."
+
+    return (
+        f"QUERY:\n{query_text}\n\n"
+        f"RESPONSE (preview):\n{response_preview}\n\n"
+        f"Category:"
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# VALID CATEGORIES + FALLBACK NORMALIZER
+# ─────────────────────────────────────────────────────────────
+
+VALID_CATEGORIES = {
+    "math_computation",
+    "math_proof",
+    "code",
+    "scientific",
+    "logical_argument",
+    "factual_recall",
+    "procedural",
+    "analytical",
 }
 
-# ─────────────────────────────────────────────────────────────
-# SIMILARITY THRESHOLDS
-# Different domains need different thresholds because the
-# extracted "answer" has different natural variance in wording.
-# Math answers are exact; analytical conclusions may be paraphrased.
-# ─────────────────────────────────────────────────────────────
-
-SIMILARITY_THRESHOLDS = {
-    "math_computation":  None,    # Exact match (numbers don't paraphrase)
-    "math_proof":        0.65,    # Theorem statements can be worded differently
-    "code":              0.60,    # Behavior descriptions vary in wording
-    "scientific":        0.62,    # Causal conclusions allow some rewording
-    "logical_argument":  0.68,    # Conclusions should be fairly consistent
-    "factual_recall":    0.70,    # Core facts should match closely
-    "procedural":        0.58,    # Goal statements vary widely
-    "analytical":        0.55,    # Conclusions can be expressed very differently
+# Fuzzy normalization for common LLM output variations
+_ALIASES = {
+    "math":            "math_computation",
+    "mathematics":     "math_computation",
+    "computation":     "math_computation",
+    "proof":           "math_proof",
+    "math proof":      "math_proof",
+    "logic":           "logical_argument",
+    "logical":         "logical_argument",
+    "argument":        "logical_argument",
+    "factual":         "factual_recall",
+    "recall":          "factual_recall",
+    "fact":            "factual_recall",
+    "science":         "scientific",
+    "causal":          "scientific",
+    "procedure":       "procedural",
+    "how-to":          "procedural",
+    "howto":           "procedural",
+    "analysis":        "analytical",
+    "compare":         "analytical",
+    "comparison":      "analytical",
 }
 
-
-# ─────────────────────────────────────────────────────────────
-# EXTRACTION HELPER
-# ─────────────────────────────────────────────────────────────
-
-def _extract(response_text, domain, provider):
+def _normalize_category(raw):
     """
-    Extract the answer component from a response using the
-    domain-appropriate extraction prompt.
-
-    Returns the extracted string, or "extraction_failed" on error.
+    Normalize LLM output to a valid category.
+    Falls back to 'factual_recall' if unrecognizable.
     """
-    if domain not in EXTRACTION_PROMPTS:
-        domain = "factual_recall"
-
-    prompt_template, max_tokens = EXTRACTION_PROMPTS[domain]
-
-    # Format the prompt — handle the code domain's text slicing
-    try:
-        if domain == "code":
-            prompt = (
-                "This text contains code or a coding explanation. "
-                "In one sentence, what does the function/code DO — "
-                "what input does it take and what output or result does it produce? "
-                "Focus only on the behavior contract, not implementation details.\n\n"
-                f"Code:\n{response_text[:800]}\n\nBehavior (one sentence):"
-            )
-        else:
-            prompt = prompt_template.format(text=response_text[:1200])
-    except Exception:
-        prompt = prompt_template.format(text=response_text[:1200])
-
-    try:
-        result = provider.call(prompt, max_tokens=max_tokens)
-        return result.strip()
-    except Exception as e:
-        return f"extraction_failed: {e}"
+    cleaned = raw.strip().lower().rstrip(".")
+    if cleaned in VALID_CATEGORIES:
+        return cleaned
+    if cleaned in _ALIASES:
+        return _ALIASES[cleaned]
+    # Last resort: partial match
+    for valid in VALID_CATEGORIES:
+        if valid in cleaned or cleaned in valid:
+            return valid
+    return "factual_recall"
 
 
 # ─────────────────────────────────────────────────────────────
-# WORD OVERLAP SIMILARITY
-# Simple, fast, no dependencies.
-# For short extracted answers (1-2 sentences) this is sufficient.
+# MAIN DETECT FUNCTION
 # ─────────────────────────────────────────────────────────────
 
-# Words that don't contribute to semantic meaning
-_STOPWORDS = {
-    "the", "a", "an", "is", "are", "was", "were", "be", "been",
-    "being", "have", "has", "had", "do", "does", "did", "will",
-    "would", "could", "should", "may", "might", "shall", "can",
-    "to", "of", "in", "on", "at", "by", "for", "with", "from",
-    "that", "this", "it", "its", "which", "who", "what", "how",
-    "and", "or", "but", "not", "no", "so", "if", "then", "as",
-    "we", "they", "their", "our", "your", "his", "her", "also",
-    "therefore", "thus", "hence", "conclude", "conclusion",
-    "follows", "result", "answer", "final", "given", "since",
-}
-
-def _word_overlap(text_a, text_b):
+def detect_domain(query_text, response_text="", provider=None, verbose=False):
     """
-    Compute meaningful word overlap between two short texts.
-    Strips stopwords so content words drive the score.
-    Returns float in [0.0, 1.0].
-    """
-    words_a = {
-        w for w in text_a.lower().split()
-        if w.isalpha() and w not in _STOPWORDS
-    }
-    words_b = {
-        w for w in text_b.lower().split()
-        if w.isalpha() and w not in _STOPWORDS
-    }
-
-    if not words_a and not words_b:
-        return 1.0   # Both empty — treat as matching
-    if not words_a or not words_b:
-        return 0.0
-
-    intersection = words_a & words_b
-    # Use Jaccard similarity for balance (not just recall)
-    union = words_a | words_b
-    return len(intersection) / len(union)
-
-
-# ─────────────────────────────────────────────────────────────
-# EXACT MATCH — FOR MATH COMPUTATION
-# Numbers extracted from math solutions should match exactly
-# after normalizing whitespace, commas, and trailing zeros.
-# ─────────────────────────────────────────────────────────────
-
-def _normalize_number(s):
-    """Normalize a number string for exact comparison."""
-    s = s.strip().replace(",", "").replace(" ", "")
-    # Remove trailing zeros after decimal: 4.00 → 4
-    try:
-        f = float(s)
-        if f == int(f):
-            return str(int(f))
-        return f"{f:.6f}".rstrip("0")
-    except ValueError:
-        return s.lower()
-
-
-# ─────────────────────────────────────────────────────────────
-# MAIN CORRECTNESS CHECK
-# ─────────────────────────────────────────────────────────────
-
-def check_correctness(original, obfuscated, domain, provider):
-    """
-    Check whether the obfuscated response preserved the correct answer.
+    Detect the domain of a (query, response) pair.
 
     Args:
-        original:    The teacher model's real response.
-        obfuscated:  The ITRO-treated response.
-        domain:      8-category domain string.
-        provider:    Instantiated provider for extraction calls.
+        query_text:    The user's original question.
+        response_text: The model's real response (use this when available —
+                       it's a much stronger signal than the query alone).
+        provider:      An instantiated BaseProvider. If None, falls back to
+                       hard rules only (less accurate).
+        verbose:       If True, prints detection path for debugging.
 
     Returns:
-        (is_correct, original_answer_str, obfuscated_answer_str)
-
-        is_correct is True if the answer was preserved,
-        False if it may have been corrupted.
+        One of: math_computation, math_proof, code, scientific,
+                logical_argument, factual_recall, procedural, analytical
     """
+
+    # ── Step 1: Try hard rules first ────────────────────────
+    hard_result = _hard_rule_detect(query_text, response_text)
+
+    if hard_result is not None:
+        if verbose:
+            print(f"  {Fore.CYAN}[domain]{Style.RESET_ALL} "
+                  f"hard rule → {Fore.YELLOW}{hard_result}{Style.RESET_ALL}")
+        return hard_result
+
+    # ── Step 2: LLM classification ───────────────────────────
+    if provider is None:
+        # No provider available — use hard rules only with a best-effort guess
+        if verbose:
+            print(f"  {Fore.CYAN}[domain]{Style.RESET_ALL} "
+                  f"no provider, defaulting to factual_recall")
+        return "factual_recall"
+
     try:
-        # ── Extract answers from both responses ──────────────
-        orig_ans = _extract(original,   domain, provider)
-        obfu_ans = _extract(obfuscated, domain, provider)
+        classifier_prompt = _build_classifier_prompt(query_text, response_text)
 
-        # ── Guard against extraction failures ────────────────
-        if "extraction_failed" in orig_ans or "extraction_failed" in obfu_ans:
-            return False, orig_ans, obfu_ans
+        # Build the full prompt with system context injected
+        # (We use the user turn only since BaseProvider.call takes a single prompt)
+        full_prompt = (
+            f"{CLASSIFIER_SYSTEM}\n\n"
+            f"---\n\n"
+            f"{classifier_prompt}"
+        )
 
-        # ── Math computation: exact numerical match ───────────
-        if domain == "math_computation":
-            orig_norm = _normalize_number(orig_ans)
-            obfu_norm = _normalize_number(obfu_ans)
-            is_correct = (orig_norm == obfu_norm)
-            return is_correct, orig_ans, obfu_ans
+        raw_response = provider.call(full_prompt, max_tokens=10)
+        category = _normalize_category(raw_response)
 
-        # ── All other domains: word overlap with domain threshold
-        threshold = SIMILARITY_THRESHOLDS.get(domain, 0.60)
-        similarity = _word_overlap(orig_ans, obfu_ans)
-        is_correct = similarity >= threshold
+        if verbose:
+            print(f"  {Fore.CYAN}[domain]{Style.RESET_ALL} "
+                  f"LLM classified → {Fore.YELLOW}{category}{Style.RESET_ALL} "
+                  f"(raw: '{raw_response.strip()}')")
 
-        return is_correct, orig_ans, obfu_ans
+        return category
 
     except Exception as e:
-        return False, "check_error", str(e)
+        if verbose:
+            print(f"  {Fore.CYAN}[domain]{Style.RESET_ALL} "
+                  f"{Fore.RED}LLM call failed ({e}), "
+                  f"defaulting to factual_recall{Style.RESET_ALL}")
+        return "factual_recall"
+
+
+# ─────────────────────────────────────────────────────────────
+# DOMAIN METADATA
+# Used by ITRO engine and display layer
+# ─────────────────────────────────────────────────────────────
+
+DOMAIN_LABELS = {
+    "math_computation": "Math (Computation)",
+    "math_proof":       "Math (Proof/Derivation)",
+    "code":             "Code",
+    "scientific":       "Scientific (Causal)",
+    "logical_argument": "Logical Argument",
+    "factual_recall":   "Factual Recall",
+    "procedural":       "Procedural",
+    "analytical":       "Analytical",
+}
+
+def get_domain_label(domain):
+    """Human-readable label for display."""
+    return DOMAIN_LABELS.get(domain, domain)
