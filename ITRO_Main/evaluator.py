@@ -136,8 +136,7 @@ def generate_answer(model, tokenizer, question, max_tokens=256):
         output_ids = model.generate(
             **inputs,
             max_new_tokens = max_tokens,
-            temperature    = 0.1,
-            do_sample      = False,   # greedy — deterministic evaluation
+            do_sample      = False,   # greedy decoding — deterministic, reproducible
             pad_token_id   = tokenizer.eos_token_id,
         )
 

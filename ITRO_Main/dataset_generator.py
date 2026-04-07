@@ -105,7 +105,7 @@ class DatasetGenerator:
 
         self.model = AutoModelForCausalLM.from_pretrained(
             TEACHER_PATH,
-            torch_dtype       = torch.float16,
+            dtype       = torch.float16,
             device_map        = "auto",
             trust_remote_code = True,
         )
@@ -243,163 +243,163 @@ class DatasetGenerator:
     # This is what an attacker collects when ADHD is active.
     # ─────────────────────────────────────────────────────────
 
-def generate_B(self, dataset_A):
-    """
-    Generate Dataset B: ADHD-treated responses.
+    def generate_B(self, dataset_A):
+        """
+        Generate Dataset B: ADHD-treated responses.
 
-    For each question:
-      1. Get the clean response from Dataset A
-      2. Detect domain (math_computation, code, etc.)
-      3. Compute tau (obfuscation intensity)
-      4. Build ITRO obfuscation prompt
-      5. Have teacher rewrite its own reasoning badly
-      6. Correctness checker verifies final answer preserved
-      7. If preserved: save obfuscated. If not: save original (safety valve).
+        For each question:
+        1. Get the clean response from Dataset A
+        2. Detect domain (math_computation, code, etc.)
+        3. Compute tau (obfuscation intensity)
+        4. Build ITRO obfuscation prompt
+        5. Have teacher rewrite its own reasoning badly
+        6. Correctness checker verifies final answer preserved
+        7. If preserved: save obfuscated. If not: save original (safety valve).
 
-    Checkpoints every 100 questions — if this crashes at question 1800,
-    restart and it picks up from the last checkpoint automatically.
+        Checkpoints every 100 questions — if this crashes at question 1800,
+        restart and it picks up from the last checkpoint automatically.
 
-    Args:
-        dataset_A: List of clean entries from generate_A().
+        Args:
+            dataset_A: List of clean entries from generate_A().
 
-    Returns:
-        List of {"input": ..., "output": ..., "tau": ..., "domain": ...} dicts.
-    """
-    print("\n" + "═" * 60)
-    print("  DATASET B — ADHD-Treated (experimental group)")
-    print("  ITRO corrupts reasoning. Final answer preserved.")
-    print("  Checkpointing every 100 questions.")
-    print("═" * 60 + "\n")
+        Returns:
+            List of {"input": ..., "output": ..., "tau": ..., "domain": ...} dicts.
+        """
+        print("\n" + "═" * 60)
+        print("  DATASET B — ADHD-Treated (experimental group)")
+        print("  ITRO corrupts reasoning. Final answer preserved.")
+        print("  Checkpointing every 100 questions.")
+        print("═" * 60 + "\n")
 
-    checkpoint_path = "datasets/dataset_B_checkpoint.json"
+        checkpoint_path = "datasets/dataset_B_checkpoint.json"
 
-    # ── Resume from checkpoint if one exists ─────────────────
-    # This fires if the job crashed partway through.
-    # On a clean first run, no checkpoint exists and we start fresh.
-    if os.path.exists(checkpoint_path):
-        with open(checkpoint_path, "r") as f:
-            checkpoint = json.load(f)
-        entries   = checkpoint["entries"]
-        preserved = checkpoint["preserved"]
-        fallbacks = checkpoint["fallbacks"]
-        start_idx = len(entries)
-        print(f"  ✓ Checkpoint found — resuming from question {start_idx} "
-              f"of {len(dataset_A)}")
-        print(f"    Preserved so far: {preserved}, Fallbacks: {fallbacks}\n")
-    else:
-        entries   = []
-        preserved = 0
-        fallbacks = 0
-        start_idx = 0
-        print(f"  Starting fresh — {len(dataset_A)} questions to process\n")
+        # ── Resume from checkpoint if one exists ─────────────────
+        # This fires if the job crashed partway through.
+        # On a clean first run, no checkpoint exists and we start fresh.
+        if os.path.exists(checkpoint_path):
+            with open(checkpoint_path, "r") as f:
+                checkpoint = json.load(f)
+            entries   = checkpoint["entries"]
+            preserved = checkpoint["preserved"]
+            fallbacks = checkpoint["fallbacks"]
+            start_idx = len(entries)
+            print(f"  ✓ Checkpoint found — resuming from question {start_idx} "
+                f"of {len(dataset_A)}")
+            print(f"    Preserved so far: {preserved}, Fallbacks: {fallbacks}\n")
+        else:
+            entries   = []
+            preserved = 0
+            fallbacks = 0
+            start_idx = 0
+            print(f"  Starting fresh — {len(dataset_A)} questions to process\n")
 
-    # ── Process questions from start_idx onward ───────────────
-    for i, item in enumerate(
-        tqdm(dataset_A[start_idx:],
-             desc      = "  Dataset B",
-             initial   = start_idx,
-             total     = len(dataset_A)),
-        start = start_idx
-    ):
-        question = item["input"].replace("Question: ", "")
-        original = item["output"]
+        # ── Process questions from start_idx onward ───────────────
+        for i, item in enumerate(
+            tqdm(dataset_A[start_idx:],
+                desc      = "  Dataset B",
+                initial   = start_idx,
+                total     = len(dataset_A)),
+            start = start_idx
+        ):
+            question = item["input"].replace("Question: ", "")
+            original = item["output"]
 
-        try:
-            # ── Step 1: Detect domain ─────────────────────────
-            domain = detect_domain(
-                query_text    = question,
-                response_text = original,
-                provider      = self.provider,
-                verbose       = False,
-            )
+            try:
+                # ── Step 1: Detect domain ─────────────────────────
+                domain = detect_domain(
+                    query_text    = question,
+                    response_text = original,
+                    provider      = self.provider,
+                    verbose       = False,
+                )
 
-            # ── Step 2: Compute tau ───────────────────────────
-            tau = compute_tau(
-                query_text = question,
-                domain     = domain,
-                provider   = self.provider,
-                verbose    = False,
-            )
+                # ── Step 2: Compute tau ───────────────────────────
+                tau = compute_tau(
+                    query_text = question,
+                    domain     = domain,
+                    provider   = self.provider,
+                    verbose    = False,
+                )
 
-            # ── Step 3: Build ITRO prompt and obfuscate ───────
-            obfu_prompt = build_obfuscation_prompt(original, domain, tau)
-            obfuscated  = self._generate(obfu_prompt, max_tokens=700)
+                # ── Step 3: Build ITRO prompt and obfuscate ───────
+                obfu_prompt = build_obfuscation_prompt(original, domain, tau)
+                obfuscated  = self._generate(obfu_prompt, max_tokens=700)
 
-            # ── Step 4: Correctness check ─────────────────────
-            is_ok, _, _ = check_correctness(
-                original, obfuscated, domain, self.provider
-            )
+                # ── Step 4: Correctness check ─────────────────────
+                is_ok, _, _ = check_correctness(
+                    original, obfuscated, domain, self.provider
+                )
 
-            if is_ok:
-                final = obfuscated
-                preserved += 1
-            else:
-                # Safety valve: answer corrupted — use original
-                final = original
+                if is_ok:
+                    final = obfuscated
+                    preserved += 1
+                else:
+                    # Safety valve: answer corrupted — use original
+                    final = original
+                    fallbacks += 1
+
+            except Exception as e:
+                # If anything in the ITRO pipeline fails, fall back safely
+                # Never let one bad question kill the whole run
+                final  = original
+                domain = "unknown"
+                tau    = 0.0
                 fallbacks += 1
 
-        except Exception as e:
-            # If anything in the ITRO pipeline fails, fall back safely
-            # Never let one bad question kill the whole run
-            final  = original
-            domain = "unknown"
-            tau    = 0.0
-            fallbacks += 1
+            entry = self._format_entry(question, final)
+            entry["tau"]    = round(tau, 4)
+            entry["domain"] = domain
+            entries.append(entry)
 
-        entry = self._format_entry(question, final)
-        entry["tau"]    = round(tau, 4)
-        entry["domain"] = domain
-        entries.append(entry)
+            # ── Checkpoint every 100 questions ────────────────────
+            # Saves to a separate file — not the final dataset.
+            # If the job dies, we resume from here on restart.
+            if len(entries) % 100 == 0:
+                os.makedirs("datasets", exist_ok=True)
+                with open(checkpoint_path, "w") as f:
+                    json.dump({
+                        "entries":   entries,
+                        "preserved": preserved,
+                        "fallbacks": fallbacks,
+                    }, f)
+                # Print brief progress note alongside tqdm
+                rate_so_far = preserved / len(entries) * 100
+                tqdm.write(f"  [checkpoint] {len(entries)}/{len(dataset_A)} done — "
+                        f"preservation rate so far: {rate_so_far:.1f}%")
 
-        # ── Checkpoint every 100 questions ────────────────────
-        # Saves to a separate file — not the final dataset.
-        # If the job dies, we resume from here on restart.
-        if len(entries) % 100 == 0:
-            os.makedirs("datasets", exist_ok=True)
-            with open(checkpoint_path, "w") as f:
-                json.dump({
-                    "entries":   entries,
-                    "preserved": preserved,
-                    "fallbacks": fallbacks,
-                }, f)
-            # Print brief progress note alongside tqdm
-            rate_so_far = preserved / len(entries) * 100
-            tqdm.write(f"  [checkpoint] {len(entries)}/{len(dataset_A)} done — "
-                       f"preservation rate so far: {rate_so_far:.1f}%")
+        # ── Preservation statistics ───────────────────────────────
+        total = len(dataset_A)
+        rate  = preserved / total * 100 if total > 0 else 0.0
 
-    # ── Preservation statistics ───────────────────────────────
-    total = len(dataset_A)
-    rate  = preserved / total * 100 if total > 0 else 0.0
+        print(f"\n  Preservation rate : {rate:.1f}%")
+        print(f"  Obfuscated used   : {preserved}")
+        print(f"  Fallbacks (orig.) : {fallbacks}")
 
-    print(f"\n  Preservation rate : {rate:.1f}%")
-    print(f"  Obfuscated used   : {preserved}")
-    print(f"  Fallbacks (orig.) : {fallbacks}")
+        # Save preservation stats to results/
+        os.makedirs(RESULTS_PATH, exist_ok=True)
+        with open(os.path.join(RESULTS_PATH, "preservation.json"), "w") as f:
+            json.dump({
+                "rate":      round(rate, 2),
+                "preserved": preserved,
+                "fallbacks": fallbacks,
+                "total":     total,
+            }, f, indent=2)
 
-    # Save preservation stats to results/
-    os.makedirs(RESULTS_PATH, exist_ok=True)
-    with open(os.path.join(RESULTS_PATH, "preservation.json"), "w") as f:
-        json.dump({
-            "rate":      round(rate, 2),
-            "preserved": preserved,
-            "fallbacks": fallbacks,
-            "total":     total,
-        }, f, indent=2)
+        # Save final dataset
+        os.makedirs("datasets", exist_ok=True)
+        with open(DATASET_B_PATH, "w") as f:
+            json.dump(entries, f, indent=2)
 
-    # Save final dataset
-    os.makedirs("datasets", exist_ok=True)
-    with open(DATASET_B_PATH, "w") as f:
-        json.dump(entries, f, indent=2)
+        print(f"  ✓ Dataset B saved: {len(entries)} entries → {DATASET_B_PATH}")
 
-    print(f"  ✓ Dataset B saved: {len(entries)} entries → {DATASET_B_PATH}")
+        # ── Clean up checkpoint — generation succeeded ────────────
+        # If we get here, the full dataset is saved.
+        # The checkpoint file is no longer needed.
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+            print(f"  ✓ Checkpoint cleaned up")
 
-    # ── Clean up checkpoint — generation succeeded ────────────
-    # If we get here, the full dataset is saved.
-    # The checkpoint file is no longer needed.
-    if os.path.exists(checkpoint_path):
-        os.remove(checkpoint_path)
-        print(f"  ✓ Checkpoint cleaned up")
-
-    return entries
+        return entries
 
     # ─────────────────────────────────────────────────────────
     # DATASET C — NO-COT (comparison group)
