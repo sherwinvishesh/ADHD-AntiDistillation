@@ -91,7 +91,7 @@ def load_model(path):
 
     model = AutoModelForCausalLM.from_pretrained(
         path,
-        torch_dtype       = torch.float16,
+        dtype       = torch.float16,
         device_map        = "auto",
         trust_remote_code = True,
     )

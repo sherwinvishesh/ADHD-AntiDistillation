@@ -139,7 +139,7 @@ def train_student(dataset_path, output_path, run_name):
 
     model = AutoModelForCausalLM.from_pretrained(
         STUDENT_PATH,
-        torch_dtype       = torch.bfloat16, 
+        dtype       = torch.bfloat16, 
         device_map        = "auto",
         trust_remote_code = True,
     )

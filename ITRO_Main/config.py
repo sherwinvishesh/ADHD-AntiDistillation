@@ -64,4 +64,3 @@ BATCH_SIZE    = 2        # per device
 GRAD_ACCUM    = 8        # effective batch size = BATCH_SIZE × GRAD_ACCUM = 16
 LEARNING_RATE = 2e-5
 MAX_SEQ_LEN   = 512
-EVAL_QUESTIONS = 500
