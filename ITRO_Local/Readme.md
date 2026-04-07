@@ -19,7 +19,6 @@ The core defense is identical: when an adversary queries the system to harvest (
 
 Everything else — domain detection, τ scoring, ITRO templates, correctness checker — is identical to Phase 1.1 and ported unchanged.
 
----
 
 ## System Requirements
 
@@ -38,7 +37,7 @@ Check CUDA availability:
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
----
+
 
 ## How The Pipeline Works
 
@@ -78,7 +77,6 @@ Question
     If answers don't match → safety valve fires, return real response.
 ```
 
----
 
 ## File Structure
 
@@ -97,7 +95,6 @@ ITRO_Local/
     └── qwen_provider.py     ← Local Qwen2.5-7B-Instruct via transformers
 ```
 
----
 
 ## Setup
 
@@ -138,7 +135,6 @@ python main.py
 
 The model loads into GPU memory on startup. First load takes ~20-30 seconds.
 
----
 
 ## Running Modes
 
@@ -184,7 +180,6 @@ python main.py -m 2 "Implement a function that finds all duplicates in a list"
 
 Both `-m` and the question are required together. Providing only one prints an error with usage instructions.
 
----
 
 ## Configuration
 
@@ -214,7 +209,6 @@ temperature=0.1, top_p=0.95, repetition_penalty=1.0, do_sample=True
 
 Calls with `max_tokens ≤ 150` automatically use `STRICT_GENERATION_CONFIG`. All other calls use `GENERATION_CONFIG`.
 
----
 
 ## Domain Detection (8 Categories)
 
@@ -238,7 +232,6 @@ The domain classifier uses a **hybrid approach**: hard rules for obvious cases, 
 
 Everything else goes to Qwen with a 10-token budget.
 
----
 
 ## Tau (τ) — Obfuscation Intensity
 
@@ -280,7 +273,6 @@ Each domain has hard floor/ceiling bounds that clip the final τ regardless of s
 
 All intensity levels require the core reasoning **path to be rewritten**, not just extended. Appending sentences to the end of the original solution is not obfuscation.
 
----
 
 ## ITRO Transformation Toolkits
 
@@ -358,7 +350,6 @@ Each domain has a named set of corruption techniques applied per the τ-calibrat
 | `REDUNDANT_SYNTHESIS` | Re-derives the conclusion from a different analytical angle |
 | `OVERCOMPLICATED_CRITERIA_DECOMPOSITION` | Breaks criteria into sub-criteria and re-aggregates |
 
----
 
 ## Correctness Checker
 
@@ -377,7 +368,6 @@ The correctness checker verifies obfuscation preserved the correct answer. Each 
 
 If extraction fails or answers don't match, the system returns the original unmodified response. The answer is never wrong.
 
----
 
 ## Inference Calls Per Query
 
@@ -394,7 +384,6 @@ All calls go to the local Qwen model. No external network requests.
 
 Hard rule triggers (code blocks, math symbols) skip calls 2 and/or 3. Expect 10-40 seconds per question depending on GPU and response length. Qwen stays loaded in memory between questions — there is no reload cost per query.
 
----
 
 ## Test Queries
 
@@ -419,7 +408,6 @@ For each result, verify:
 5. Correctness check passes (answer preserved)
 6. Obfuscated response reads like genuine expert reasoning, not constructed noise
 
----
 
 ## What Comes Next (Phase 2+)
 
@@ -429,7 +417,6 @@ Phase 1.2 validates that the full pipeline runs correctly on a local model. Next
 2. **PRADA detector integration** — add the behavioral analysis layer (query volume, reasoning ratio, topic breadth) to compute trust scores and route queries
 3. **Performance optimization** — batch inference, speculative decoding, or smaller quantization for faster per-query latency
 
----
 
 ## Key Design Decisions
 

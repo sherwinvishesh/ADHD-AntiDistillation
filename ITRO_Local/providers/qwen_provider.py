@@ -118,7 +118,7 @@ class QwenProvider(BaseProvider):
             else:
                 self._model = AutoModelForCausalLM.from_pretrained(
                     QWEN_MODEL_PATH,
-                    torch_dtype       = torch.float16,
+                    dtype = torch.float16,
                     device_map        = "auto",
                     trust_remote_code = True,
                 )

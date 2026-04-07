@@ -44,8 +44,6 @@ correct here, the only change for Phase 1.2 is swapping the API calls for a
 local Qwen model. Every other file ports unchanged.
 
 
----
-
 
 
 ## How The Pipeline Works
@@ -85,7 +83,6 @@ Question
     If answers don't match → safety valve fires, return real response.
 ```
 
----
 
 ## Domain Detection (8 Categories)
 
@@ -109,7 +106,6 @@ The domain classifier uses a **hybrid approach**: hard rules for obvious cases, 
 
 Everything else goes to the LLM classifier with a 10-token budget.
 
----
 
 ## Tau (τ) - Obfuscation Intensity
 
@@ -153,7 +149,6 @@ Each domain has hard floor/ceiling bounds that clip the final τ regardless of L
 
 All intensity levels require the core reasoning **path to be rewritten**, not just extended. Appending sentences to the end of the original solution does not count as obfuscation.
 
----
 
 ## ITRO Transformation Toolkits
 
@@ -231,7 +226,6 @@ Each domain has a named set of corruption techniques. The τ-calibrated recipe s
 | `REDUNDANT_SYNTHESIS` | Re-derives the conclusion from a different analytical angle |
 | `OVERCOMPLICATED_CRITERIA_DECOMPOSITION` | Breaks criteria into sub-criteria and re-aggregates |
 
----
 
 ## Correctness Checker
 
@@ -250,7 +244,6 @@ The correctness checker verifies that obfuscation preserved the correct answer. 
 
 If extraction fails or answers don't match, the system returns the original unmodified response. The answer is never wrong.
 
----
 
 ## File Structure
 
@@ -272,7 +265,6 @@ ITRO_API/
     └── gemini_provider.py
 ```
 
----
 
 ## Setup
 
@@ -310,7 +302,6 @@ export GEMINI_API_KEY=your_key_here
 python main.py
 ```
 
----
 
 ## Running Modes
 
@@ -355,7 +346,6 @@ python main.py -p 2 -m 2 "Implement a function that finds all duplicates in a li
 
 All three flags are required together. Providing only some of them will print an error with usage instructions.
 
----
 
 ## API Calls Per Query
 
@@ -372,7 +362,6 @@ This tool makes **6 API calls per question** in the worst case:
 
 Hard rule triggers (code blocks, math symbols, trivial queries) skip calls 2 and/or 3. Expect 3–8 seconds per question depending on provider latency.
 
----
 
 ## Adding a Custom Provider
 
@@ -432,7 +421,6 @@ YOUR_API_KEY=your_key_here
 
 Everything else - domain detection, τ scoring, ITRO templates, correctness checking - works automatically. The provider abstraction is the only thing you implement.
 
----
 
 ## Test Queries
 
@@ -456,7 +444,6 @@ For each result, verify:
 4. Correctness check passes (answer preserved)
 5. Obfuscated response reads like genuine expert reasoning, not constructed noise
 
----
 
 ## What Comes Next (Phase 2+)
 
@@ -469,7 +456,6 @@ Once Phase 1.1 validation is complete, the system ports to a local GPU model:
 
 The point of Phase 1.1 is to validate all of this logic cheaply before committing to local compute.
 
----
 
 ## Key Design Decisions
 
@@ -484,5 +470,3 @@ Fixed low τ: complex queries get mild obfuscation - the defense is weak where i
 
 **Why ITRO uses named techniques not vague instructions**
 "Make this more complex" produces surface verbosity. `WRONG_PROOF_STRATEGY` + `SPURIOUS_LEMMA` + `WRONG_INDUCTION_HYPOTHESIS` produces specific, recognizable bad habits that generalize across the student model's proof-writing behavior.
-
----
