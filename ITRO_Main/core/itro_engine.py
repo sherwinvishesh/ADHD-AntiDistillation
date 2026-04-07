@@ -10,7 +10,7 @@
 #   math_computation, math_proof, code, scientific,
 #   logical_argument, factual_recall, procedural, analytical
 
-from tau_system import get_tau_label
+
 
 # ─────────────────────────────────────────────────────────────
 # SHARED PLAUSIBILITY INSTRUCTION

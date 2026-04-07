@@ -52,7 +52,7 @@ class ITRODataset(Dataset):
         return {
             "input_ids":      torch.tensor(self.encodings["input_ids"][idx]),
             "attention_mask": torch.tensor(self.encodings["attention_mask"][idx]),
-            "labels":         torch.tensor(self.encodings["input_ids"][idx]),
+            # "labels":         torch.tensor(self.encodings["input_ids"][idx]),
             # labels = input_ids is the standard causal LM objective.
             # The model learns to predict each token from the previous ones.
         }
@@ -139,7 +139,7 @@ def train_student(dataset_path, output_path, run_name):
 
     model = AutoModelForCausalLM.from_pretrained(
         STUDENT_PATH,
-        torch_dtype       = torch.float16,
+        torch_dtype       = torch.bfloat16, 
         device_map        = "auto",
         trust_remote_code = True,
     )
@@ -161,7 +161,8 @@ def train_student(dataset_path, output_path, run_name):
         learning_rate               = LEARNING_RATE,
         warmup_ratio                = 0.10,
         lr_scheduler_type           = "cosine",
-        fp16                        = True,
+        fp16                        = False,
+        bf16  = True, 
         logging_steps               = 50,
         save_strategy               = "epoch",
         report_to                   = "none",    # no wandb/tensorboard

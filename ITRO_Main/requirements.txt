@@ -4,3 +4,4 @@ accelerate
 datasets
 python-dotenv
 tqdm
+colorama
