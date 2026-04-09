@@ -64,7 +64,6 @@ weights/
 # (these can be large and are reproducible)
 itro_generated_pairs.json
 training_data/
-datasets/
 
 # ── macOS ─────────────────────────────────────────────────────
 .DS_Store
