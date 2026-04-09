@@ -44,7 +44,7 @@ DATASET_C_PATH = "datasets/dataset_C.json"   # no-CoT (comparison)
 # ─────────────────────────────────────────────────────────────
 
 STUDENT_BASELINE_PATH = "models/student_baseline"
-STUDENT_ADHD_PATH     = "models/student_adhd"
+STUDENT_ADHD_PATH     = "models/student_adhd_itro"
 STUDENT_NOCOT_PATH    = "models/student_nocot"
 
 # ─────────────────────────────────────────────────────────────
