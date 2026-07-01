@@ -9,6 +9,10 @@ class BaseProvider(ABC):
     """Base interface every provider must implement."""
 
     @abstractmethod
+    def check_api_key(self):
+        """Validate the required env var is set, exit cleanly if missing."""
+
+    @abstractmethod
     def complete(self, prompt: str, max_tokens: int = 1024, system: str = None) -> str:
         """
         Send a prompt to the model and return the text response.

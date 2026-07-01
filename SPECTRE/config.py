@@ -1,5 +1,5 @@
 """
-SPECTRE_API — Configuration
+SPECTRE — Configuration
 """
 
 import os
@@ -14,6 +14,10 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 # ── Model Names ───────────────────────────────────────────────────────────────
 ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
+
+# ── Default provider (skips the interactive menu when set) ──────────────────
+# Accepts: anthropic / claude / gemini / 1 / 2
+SPECTRE_DEFAULT_PROVIDER = os.getenv("SPECTRE_DEFAULT_PROVIDER", "").strip() or None
 
 # ── Token Budgets ─────────────────────────────────────────────────────────────
 TEACHER_MAX_TOKENS: int = 1024          # Clean teacher response
