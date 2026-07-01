@@ -1,5 +1,3 @@
-# correctness_checker.py
-#
 # Domain-aware correctness checking for all 8 ITRO domains.
 #
 # Each domain has a targeted extraction prompt that asks the LLM
