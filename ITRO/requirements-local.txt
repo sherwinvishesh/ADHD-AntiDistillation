@@ -1,0 +1,6 @@
+# Only needed if you plan to use the local Qwen provider (option 3).
+# pip install -r requirements.txt -r requirements-local.txt
+torch
+transformers
+accelerate
+bitsandbytes

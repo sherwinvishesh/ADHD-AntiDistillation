@@ -1,4 +1,0 @@
-anthropic
-google-generativeai
-python-dotenv
-colorama

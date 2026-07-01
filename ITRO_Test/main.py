@@ -1,0 +1,226 @@
+# main.py — ITRO_Test
+# Thin batch-testing harness: imports ITRO (no pipeline logic of its own),
+# lets you pick a provider and a dataset, runs every question through the
+# pipeline, and writes <dataset>_itro_answers.json.
+
+import argparse
+import glob
+import os
+import sys
+
+from colorama import Fore, Style, init
+from dotenv import load_dotenv
+from tqdm import tqdm
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_HERE)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+import ITRO
+from dataset_io import load_dataset, write_results, resolve_dataset_path
+
+init(autoreset=True)
+load_dotenv(os.path.join(_HERE, ".env"))
+
+DATASETS_DIR = os.path.join(_HERE, "datasets")
+
+
+def print_banner():
+    print()
+    print(Fore.CYAN + Style.BRIGHT + "  ITRO_Test — batch evaluation harness")
+    print(Style.RESET_ALL)
+    print("  Imports ITRO as-is (no logic of its own). Picks a provider and")
+    print("  a dataset, runs every question through the ITRO pipeline, and")
+    print("  writes <dataset>_itro_answers.json next to the dataset file.")
+    print()
+
+
+def select_provider():
+    # ITRO_Test has its own independent ITRO_DEFAULT_PROVIDER (from
+    # ITRO_Test/.env, loaded above) — distinct from ITRO's own default in
+    # ITRO/.env. Resolved through the same alias table via resolve_provider_key.
+    default_key = ITRO.resolve_provider_key(os.getenv("ITRO_DEFAULT_PROVIDER"))
+    if default_key is not None:
+        provider = ITRO.AVAILABLE_PROVIDERS[default_key]()
+        print(f"  {Fore.WHITE + Style.DIM}Using default provider from .env "
+              f"(ITRO_DEFAULT_PROVIDER set){Style.RESET_ALL}")
+        return provider
+
+    print(Fore.WHITE + Style.BRIGHT + "  SELECT A PROVIDER" + Style.RESET_ALL)
+    print()
+    for key, label in ITRO.list_providers():
+        print(f"    [{key}]  {label}")
+    print()
+
+    while True:
+        choice = input("  Enter choice: ").strip()
+        try:
+            return ITRO.get_provider(choice)
+        except ValueError as e:
+            print(f"  {Fore.RED}{e}{Style.RESET_ALL}")
+
+
+DETAIL_LEVELS = {"1": ("Detailed", True), "2": ("Simple", False)}
+_DETAIL_ALIASES = {
+    "1": "1", "detailed": "1", "full": "1",
+    "2": "2", "simple": "2", "non-detailed": "2", "nondetailed": "2",
+}
+
+
+def resolve_detail_key(value):
+    if not value:
+        return None
+    return _DETAIL_ALIASES.get(str(value).strip().lower())
+
+
+def select_detail_level():
+    print(Fore.WHITE + Style.BRIGHT + "  SELECT ANSWER DETAIL" + Style.RESET_ALL)
+    print()
+    print(f"    [1]  {Fore.WHITE}Detailed{Style.RESET_ALL}")
+    print(f"         {Fore.WHITE + Style.DIM}full pipeline breakdown per question — "
+          f"domain, τ, real response, obfuscated response, correctness check{Style.RESET_ALL}")
+    print()
+    print(f"    [2]  {Fore.WHITE}Simple{Style.RESET_ALL}")
+    print(f"         {Fore.WHITE + Style.DIM}just the question and the final answer, "
+          f"one block per question{Style.RESET_ALL}")
+    print()
+
+    while True:
+        choice = input("  Enter choice (1 or 2): ").strip()
+        key = resolve_detail_key(choice)
+        if key is not None:
+            return DETAIL_LEVELS[key][1]
+        print(f"  {Fore.RED}Please enter 1 or 2.{Style.RESET_ALL}")
+
+
+def select_dataset():
+    files = sorted(glob.glob(os.path.join(DATASETS_DIR, "*.json")))
+
+    print(Fore.WHITE + Style.BRIGHT + "  SELECT A DATASET" + Style.RESET_ALL)
+    print()
+    for i, path in enumerate(files, start=1):
+        print(f"    [{i}]  {os.path.basename(path)}")
+    custom_key = len(files) + 1
+    print(f"    [{custom_key}]  Enter a filename or path")
+    print()
+
+    while True:
+        choice = input("  Enter choice: ").strip()
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(files):
+                return files[idx - 1]
+            if idx == custom_key:
+                path = input("  Enter dataset filename or path: ").strip()
+                try:
+                    return resolve_dataset_path(path)
+                except FileNotFoundError as e:
+                    print(f"  {Fore.RED}{e}{Style.RESET_ALL}")
+                    continue
+        print(f"  {Fore.RED}Please enter a number from the list.{Style.RESET_ALL}")
+
+
+def run_batch(provider, dataset_path, limit=None, detailed=True):
+    questions = load_dataset(dataset_path)
+    if limit is not None:
+        questions = questions[:limit]
+
+    results = []
+    safety_valve_count = 0
+    tau_total = 0.0
+    error_count = 0
+
+    for question in tqdm(questions, desc="Running ITRO pipeline", unit="q"):
+        result = ITRO.run_pipeline(question, provider, mode="clean")
+
+        if result is None:
+            error_count += 1
+            results.append({"question": question, "error": "pipeline_failed"})
+            continue
+
+        if not result["is_correct"]:
+            safety_valve_count += 1
+        tau_total += result["tau"]
+
+        if detailed:
+            results.append({
+                "question":            question,
+                "real_response":       result["real_response"],
+                "domain":              result["domain"],
+                "tau":                 result["tau"],
+                "obfuscated_response": result["obfu_response"],
+                "final_response":      result["final_response"],
+                "correctness_pass":    result["is_correct"],
+            })
+        else:
+            results.append({
+                "question": question,
+                "answer":   result["final_response"],
+            })
+
+    n = len(questions)
+    n_scored = n - error_count
+    summary = {
+        "provider":                  provider.name,
+        "dataset":                   os.path.basename(dataset_path),
+        "count":                     n,
+        "errors":                   error_count,
+        "safety_valve_trigger_rate": (safety_valve_count / n_scored) if n_scored else None,
+        "avg_tau":                   (tau_total / n_scored) if n_scored else None,
+    }
+
+    return results, summary
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="ITRO_Test — batch evaluation harness for ITRO",
+    )
+    parser.add_argument("-p", "--provider", help="Provider key/name (1, 2, 3, claude, gemini, qwen, ...)")
+    parser.add_argument("-d", "--dataset",
+                         help="Dataset filename (looked up in datasets/) or a full path")
+    parser.add_argument("--detail", choices=["1", "2", "detailed", "simple"],
+                         help="Answer detail: 'detailed' (full pipeline breakdown) "
+                              "or 'simple' (question + answer only)")
+    parser.add_argument("--limit", type=int, default=None,
+                         help="Only process the first N questions (useful for a quick run)")
+    args = parser.parse_args()
+
+    print_banner()
+
+    provider = ITRO.get_provider(args.provider) if args.provider else select_provider()
+    provider.check_api_key()
+    print(Fore.GREEN + f"  ✓ {provider.name} — ready.")
+    print(Style.RESET_ALL)
+
+    if args.dataset:
+        try:
+            dataset_path = resolve_dataset_path(args.dataset)
+        except FileNotFoundError as e:
+            print(f"  {Fore.RED}{e}{Style.RESET_ALL}")
+            sys.exit(1)
+    else:
+        dataset_path = select_dataset()
+    print(f"  Dataset: {Fore.YELLOW}{os.path.basename(dataset_path)}{Style.RESET_ALL}")
+    print()
+
+    detail_key = resolve_detail_key(args.detail)
+    detailed = DETAIL_LEVELS[detail_key][1] if detail_key else select_detail_level()
+    print()
+
+    results, summary = run_batch(provider, dataset_path, limit=args.limit, detailed=detailed)
+    out_path = write_results(dataset_path, results, summary)
+
+    print()
+    print(Fore.CYAN + Style.BRIGHT + "  SUMMARY" + Style.RESET_ALL)
+    for key, value in summary.items():
+        print(f"    {key:28s}: {value}")
+    print()
+    print(f"  {Fore.GREEN}Wrote {out_path}{Style.RESET_ALL}")
+    print()
+
+
+if __name__ == "__main__":
+    main()
