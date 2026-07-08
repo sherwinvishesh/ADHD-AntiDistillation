@@ -24,7 +24,7 @@ logging.basicConfig(
 
 from providers import AVAILABLE_PROVIDERS, PROVIDER_MENU, resolve_provider_key
 from pipeline import run_pipeline
-from config import SPECTRE_DEFAULT_PROVIDER
+from config import SPECTRE_DEFAULT_PROVIDER, SPECTRE_STRATEGY
 
 # ── Banner ────────────────────────────────────────────────────────────────────
 
@@ -37,14 +37,11 @@ BANNER = r"""
 ║  Defense against model distillation attacks.                                 ║
 ║  The attacker receives a correct, human-readable, but training-toxic answer. ║
 ║                                                                              ║
-║  ┌──────────────────────────────────────────────────────────────────────┐    ║
-║  │  T1 Causal Chain Inversion      T2 Operation Semantic Blinding       │    ║
-║  │  T3 Spurious Variable Prolif.   T5 Answer Position Destabilization   │    ║
-║  │  T6 Noisy Numerical Self-Corr.                                       │    ║
-║  └──────────────────────────────────────────────────────────────────────┘    ║
-║                                                                              ║
-║  Pipeline:  Teacher (1 call) → 5× SPECTRE variants → GHOST selection         ║
-║  Typical API usage: 3 calls/query  (vs 7 in previous system)                 ║
+║  composite (default): T7 Entangled False-Start — one fixed corruption        ║
+║      schema on every response + poison verification. ~2-3 calls/query.      ║
+║  ensemble: T1 Backward Derivation · T2 Wrong Operation First ·               ║
+║      T3 Primitive Decomposition · T5 Circular Verification ·                 ║
+║      T6 Formula Error Correction → GHOST ranking. ~7-8 calls/query.          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """
 
@@ -125,6 +122,26 @@ def display_results(res: dict, mode: str) -> None:
         else:
             print(v["response"])
 
+    # Verification section (composite strategy)
+    if res.get("verification"):
+        ver = res["verification"]
+        print()
+        print(SEP)
+        print("  POISON VERIFICATION")
+        print(SEP)
+        print()
+        for name in ("answer_match", "internal_consistency", "poison_present",
+                     "no_early_leak", "length_ok", "confident_false_start"):
+            print(f"  {'✓' if ver[name] else '✗'}  {name}")
+        print()
+        if res["selected_variant"]:
+            print(f"  ► Delivered variant :  T7 — "
+                  f"{res['selected_variant']['transformation_name']}")
+            print(f"  ► Generation attempts:  {res['attempts']}")
+        elif res["safety_valve_triggered"]:
+            print("  ⚠  Safety valve triggered — verification failed on every")
+            print("     attempt. Delivering clean teacher response.")
+
     # GHOST scoring section
     if res["ghost_result"]:
         print()
@@ -177,7 +194,7 @@ def run_cli(args) -> None:
     provider = AVAILABLE_PROVIDERS[provider_key]()
     provider.check_api_key()
 
-    result = run_pipeline(args.question, provider, mode)
+    result = run_pipeline(args.question, provider, mode, strategy=args.strategy)
 
     if result is None:
         print("Error: pipeline failed — the teacher call or all transformations "
@@ -191,9 +208,10 @@ def run_cli(args) -> None:
 
 # ── Interactive loop ───────────────────────────────────────────────────────────
 
-def run_interactive() -> None:
+def run_interactive(strategy: str = None) -> None:
     print(BANNER)
 
+    strategy = strategy or SPECTRE_STRATEGY
     mode = select_mode()
 
     # Provider: skip the menu entirely if SPECTRE_DEFAULT_PROVIDER is set
@@ -208,6 +226,7 @@ def run_interactive() -> None:
     provider.check_api_key()
     print(f"\n  Provider : {provider.name}")
     print(f"  Mode     : {'Full analysis' if mode == 'full' else 'Clean output'}")
+    print(f"  Strategy : {strategy}")
 
     while True:
         print()
@@ -224,7 +243,7 @@ def run_interactive() -> None:
             print("  Please enter a question.")
             continue
 
-        result = run_pipeline(question, provider, mode)
+        result = run_pipeline(question, provider, mode, strategy=strategy)
 
         if result is None:
             print("\n  ✗ No response — the teacher call or all transformations "
@@ -267,6 +286,12 @@ def main() -> None:
         metavar="MODE",
         help="1=Full analysis   2=Clean output only",
     )
+    parser.add_argument(
+        "-s", "--strategy",
+        choices=["composite", "ensemble"],
+        default=None,
+        help="composite=T7 fixed schema (default)   ensemble=5 variants + GHOST",
+    )
 
     args     = parser.parse_args()
     cli_mode = args.question is not None
@@ -279,7 +304,7 @@ def main() -> None:
             args.mode = 1
         run_cli(args)
     else:
-        run_interactive()
+        run_interactive(strategy=args.strategy)
 
 
 if __name__ == "__main__":

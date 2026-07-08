@@ -123,7 +123,7 @@ def select_dataset():
         print(f"  {Fore.RED}Please enter a number from the list.{Style.RESET_ALL}")
 
 
-def run_batch(provider, dataset_path, limit=None, detailed=True):
+def run_batch(provider, dataset_path, limit=None, detailed=True, strategy=None):
     questions = load_dataset(dataset_path)
     if limit is not None:
         questions = questions[:limit]
@@ -132,23 +132,40 @@ def run_batch(provider, dataset_path, limit=None, detailed=True):
     safety_valve_count = 0
     attempts_total = 0
     error_count = 0
+    poison_verified_count = 0
+    verification_seen = 0
+    response_chars_total = 0
+    strategy_used = None
 
     for question in tqdm(questions, desc="Running SPECTRE pipeline", unit="q"):
-        result = SPECTRE.run_pipeline(question, provider, mode="clean")
+        result = SPECTRE.run_pipeline(question, provider, mode="clean",
+                                      strategy=strategy)
 
         if result is None:
             error_count += 1
             results.append({"question": question, "error": "pipeline_failed"})
             continue
 
+        strategy_used = result["strategy"]
         if result["safety_valve_triggered"]:
             safety_valve_count += 1
         attempts_total += result["attempts"]
+        response_chars_total += len(result["final_response"] or "")
+
+        # Poison audit (composite strategy): a row counts as verified only if
+        # the delivered response actually passed all critical checks — a
+        # safety-valve row delivered the clean response, not poison.
+        verification = result.get("verification")
+        if verification is not None:
+            verification_seen += 1
+            if verification["passed"] and not result["safety_valve_triggered"]:
+                poison_verified_count += 1
 
         if detailed:
             selected = result["selected_variant"]
             results.append({
                 "question":               question,
+                "strategy":               result["strategy"],
                 "clean_response":         result["clean_response"],
                 "ranking":                result["ranking"],
                 "ghost_reasoning":        result["ghost_result"].get("reasoning") if result["ghost_result"] else None,
@@ -156,6 +173,8 @@ def run_batch(provider, dataset_path, limit=None, detailed=True):
                 "selected_variant_name":  selected["transformation_name"] if selected else None,
                 "attempts":               result["attempts"],
                 "safety_valve_triggered": result["safety_valve_triggered"],
+                "verification":           verification,
+                "response_chars":         len(result["final_response"] or ""),
                 "final_response":         result["final_response"],
             })
         else:
@@ -169,10 +188,14 @@ def run_batch(provider, dataset_path, limit=None, detailed=True):
     summary = {
         "provider":                  provider.name,
         "dataset":                   os.path.basename(dataset_path),
+        "strategy":                  strategy_used,
         "count":                     n,
         "errors":                   error_count,
         "safety_valve_trigger_rate": (safety_valve_count / n_scored) if n_scored else None,
         "avg_attempts":              (attempts_total / n_scored) if n_scored else None,
+        "poison_verified_rate":      (poison_verified_count / n_scored)
+                                     if (n_scored and verification_seen) else None,
+        "avg_response_chars":        (response_chars_total / n_scored) if n_scored else None,
     }
 
     return results, summary
@@ -191,6 +214,12 @@ def main():
                               "or 'simple' (question + answer only)")
     parser.add_argument("--limit", type=int, default=None,
                          help="Only process the first N questions (useful for a quick run)")
+    parser.add_argument("-s", "--strategy", choices=["composite", "ensemble"],
+                         default=None,
+                         help="Pipeline strategy: 'composite' (T7 fixed schema, "
+                              "the dataset-generation default) or 'ensemble' "
+                              "(5 variants + GHOST). Defaults to SPECTRE's "
+                              "own config default.")
     args = parser.parse_args()
 
     print_banner()
@@ -215,7 +244,8 @@ def main():
     detailed = DETAIL_LEVELS[detail_key][1] if detail_key else select_detail_level()
     print()
 
-    results, summary = run_batch(provider, dataset_path, limit=args.limit, detailed=detailed)
+    results, summary = run_batch(provider, dataset_path, limit=args.limit,
+                                 detailed=detailed, strategy=args.strategy)
     out_path = write_results(dataset_path, results, summary)
 
     print()

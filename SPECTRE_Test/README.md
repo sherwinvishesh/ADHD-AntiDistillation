@@ -80,6 +80,28 @@ python main.py -p claude -d test_dataset.json --detail simple
 | `-d` / `--dataset` | Dataset filename (looked up in `datasets/`) or a full path |
 | `--detail` | `detailed`/`1` (full pipeline breakdown) or `simple`/`2` (question + answer only) |
 | `--limit` | Only process the first N questions — useful for a quick smoke test before committing to a large run |
+| `-s` / `--strategy` | `composite` (T7 fixed schema — the dataset-generation default) or `ensemble` (5 variants + GHOST). Omit to use SPECTRE's config default. |
+
+
+## Pre-Flight Audit (do this before any full dataset run)
+
+ITRO Bug 1 taught us that a poisoning pipeline can silently deliver clean
+data while every check passes. Before burning API budget and cluster time on
+a full 2000-question generation:
+
+1. **Generate a sample:** `python main.py -p claude -d <dataset>.json --limit 100 --detail detailed`
+2. **Check the summary:** `poison_verified_rate` should be ≥ ~0.95 and
+   `safety_valve_trigger_rate` low. Every safety-valve row delivered a
+   *clean* teacher response — those rows contain no poison at all.
+3. **Check lengths:** `avg_response_chars` must sit comfortably under the
+   student trainer's sequence budget (a truncated `####` line silently
+   destroys the training signal — ITRO Bug 3).
+4. **Read ~10 outputs yourself.** Each should read like a careful solver who
+   false-started once, corrected against a specific fact from the problem,
+   and finished correctly. If a human finds it artificial, the plausibility
+   law is being violated.
+
+Only after all four pass should you run the full generation.
 
 
 ## Dataset Schema
@@ -116,27 +138,51 @@ which answer detail you chose.
   "summary": {
     "provider": "Anthropic Claude (claude-sonnet-4-6)",
     "dataset": "test_dataset.json",
+    "strategy": "composite",
     "count": 5,
     "errors": 0,
     "safety_valve_trigger_rate": 0.0,
-    "avg_attempts": 1.4
+    "avg_attempts": 1.2,
+    "poison_verified_rate": 1.0,
+    "avg_response_chars": 1480.6
   },
   "results": [
     {
       "question": "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
+      "strategy": "composite",
       "clean_response": "...",
-      "ranking": ["T2", "T1", "T3", "T5", "T6"],
-      "ghost_reasoning": "T2 teaches a brittle reasoning pattern that fails to generalize.",
-      "selected_variant_id": "T2",
-      "selected_variant_name": "Wrong Operation First",
+      "ranking": ["T7"],
+      "ghost_reasoning": null,
+      "selected_variant_id": "T7",
+      "selected_variant_name": "Entangled False-Start (Composite)",
       "attempts": 1,
       "safety_valve_triggered": false,
+      "verification": {
+        "answer_match": true,
+        "internal_consistency": true,
+        "poison_present": true,
+        "no_early_leak": true,
+        "length_ok": true,
+        "confident_false_start": true,
+        "passed": true,
+        "warnings": []
+      },
+      "response_chars": 1466,
       "final_response": "..."
     },
     ...
   ]
 }
 ```
+
+With `-s ensemble`, `ranking`/`ghost_reasoning` carry the GHOST output as in
+v2 and `verification` is `null` (`poison_verified_rate` is then `null` in the
+summary — the ensemble path has no structural poison verifier).
+
+`poison_verified_rate` counts rows whose *delivered* response passed all
+critical poison checks; safety-valve rows (clean response delivered) count
+against it. `avg_response_chars` is the mean length of delivered responses —
+check it against the student trainer's sequence budget before training.
 
 **Simple** — just the question and the final answer, one block per question:
 

@@ -1,12 +1,17 @@
 """
-SPECTRE Transformation Engine — v2
+SPECTRE Transformation Engine — v3
 
-Exports apply_all_transformations(), which applies all five transformations
-INDEPENDENTLY to the same clean teacher response and returns a list of
-five variant dicts.
+Two entry points:
 
-All five transformations now use API calls. Each attacks a different
-structural element that student models genuinely learn during training:
+apply_composite_transformation() — the dataset-generation default. Applies
+T7 (Entangled False-Start), a single fixed corruption schema combining the
+mechanisms that can actually damage a student model (consistent false-start,
+unlearnable entangled recovery, dosed primitive decomposition, no early
+answer anchor). One API call.
+
+apply_all_transformations() — the ensemble path, kept for ablations and
+interactive demos. Applies all five v2 transformations INDEPENDENTLY to the
+same clean teacher response and returns a list of five variant dicts:
 
     T1  Backward Derivation       — reasoning direction (forward policy)
     T2  Wrong Operation First     — operation selection instinct
@@ -14,9 +19,8 @@ structural element that student models genuinely learn during training:
     T5  Circular Verification     — solution completeness expectation
     T6  Formula Error Correction  — formula/method selection confidence
 
-IMPORTANT: Each transformation receives the CLEAN response as input.
-They are NOT chained. This gives five independent single-corruption variants.
-GHOST then selects the worst one for the student to train on.
+IMPORTANT: Ensemble transformations receive the CLEAN response as input.
+They are NOT chained. GHOST then selects the worst one for the student.
 """
 
 import logging
@@ -28,6 +32,8 @@ from transformations.t2_wrong_operation_first     import transform as _t2
 from transformations.t3_primitive_decomposition   import transform as _t3
 from transformations.t5_circular_verification     import transform as _t5
 from transformations.t6_formula_error_correction  import transform as _t6
+from transformations.t7_composite                 import transform as _t7
+from transformations.t7_composite                 import select_pivot
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,7 @@ TRANSFORMATION_LABELS: dict = {
     "T3": "Primitive Decomposition",
     "T5": "Circular Verification",
     "T6": "Formula Error Correction",
+    "T7": "Entangled False-Start (Composite)",
 }
 
 _TRANSFORMS = [
@@ -52,6 +59,55 @@ _TRANSFORMS = [
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def apply_composite_transformation(
+    question: str,
+    clean_response: str,
+    provider: BaseProvider,
+    feedback: str = None,
+) -> dict:
+    """
+    Apply T7 — Entangled False-Start — to clean_response. One API call.
+
+    Args:
+        question:        The original math problem string.
+        clean_response:  The single clean teacher response.
+        provider:        Any initialised BaseProvider.
+        feedback:        Optional description of why a previous attempt
+                         failed verification (passed through to the prompt).
+
+    Returns:
+        A variant dict shaped like the ensemble ones, plus the pivot stem
+        the verifier should expect:
+            transformation_id    -- "T7"
+            transformation_name  -- human-readable label
+            response             -- transformed text including #### line
+            pivot_stem           -- exact pivot phrase requested for this
+                                    question (deterministic per question)
+            is_algorithmic       -- False
+            is_api_call          -- True
+            error                -- None on success, error string on failure
+    """
+    pivot_stem, _ = select_pivot(question)
+    try:
+        response, _ = _t7(question, clean_response, provider, feedback=feedback)
+        if not response or not response.strip():
+            raise ValueError("Transformation returned an empty response.")
+        error = None
+    except Exception as exc:
+        logger.error("Transformation T7 failed: %s", exc, exc_info=True)
+        response, error = None, str(exc)
+
+    return {
+        "transformation_id":   "T7",
+        "transformation_name": TRANSFORMATION_LABELS["T7"],
+        "response":            response,
+        "pivot_stem":          pivot_stem,
+        "is_algorithmic":      False,
+        "is_api_call":         True,
+        "error":               error,
+    }
+
 
 def apply_all_transformations(
     question: str,

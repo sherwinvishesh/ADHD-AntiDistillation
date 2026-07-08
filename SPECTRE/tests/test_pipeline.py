@@ -19,7 +19,8 @@ HAPPY_PATH_QUEUE = [
 
 def test_run_pipeline_happy_path_selects_ghost_top_ranked_variant():
     stub = StubProvider(HAPPY_PATH_QUEUE)
-    result = run_pipeline("Natalia sold clips...", stub, mode="clean")
+    result = run_pipeline("Natalia sold clips...", stub, mode="clean",
+                          strategy="ensemble")
 
     assert result is not None
     assert result["safety_valve_triggered"] is False
@@ -31,8 +32,12 @@ def test_run_pipeline_happy_path_selects_ghost_top_ranked_variant():
 
 
 def test_run_pipeline_returns_none_on_teacher_failure(failing_provider):
-    result = run_pipeline("q", failing_provider, mode="clean")
-    assert result is None
+    # Applies to both strategies — nothing safe can be delivered without
+    # a clean teacher response.
+    for strategy in ("composite", "ensemble"):
+        result = run_pipeline("q", failing_provider, mode="clean",
+                              strategy=strategy)
+        assert result is None
 
 
 def test_run_pipeline_returns_none_when_transformations_fail_outright():
@@ -43,20 +48,36 @@ def test_run_pipeline_returns_none_when_transformations_fail_outright():
                 return CLEAN
             raise RuntimeError("boom")
 
-    result = run_pipeline("q", TeacherOnly(), mode="clean")
+    result = run_pipeline("q", TeacherOnly(), mode="clean",
+                          strategy="ensemble")
     assert result is None
+
+
+def test_run_pipeline_composite_falls_back_to_clean_when_t7_fails_outright():
+    class TeacherOnly(StubProvider):
+        def complete(self, prompt, max_tokens=1024, system=None):
+            self.calls.append((prompt, max_tokens, system))
+            if len(self.calls) == 1:
+                return CLEAN
+            raise RuntimeError("boom")
+
+    result = run_pipeline("q", TeacherOnly(), mode="clean",
+                          strategy="composite")
+    assert result is not None
+    assert result["safety_valve_triggered"] is True
+    assert result["final_response"] == CLEAN
 
 
 def test_run_pipeline_clean_mode_is_silent(capsys):
     stub = StubProvider(list(HAPPY_PATH_QUEUE))
-    run_pipeline("q", stub, mode="clean")
+    run_pipeline("q", stub, mode="clean", strategy="ensemble")
     captured = capsys.readouterr()
     assert captured.out == ""
 
 
 def test_run_pipeline_full_mode_prints_progress(capsys):
     stub = StubProvider(list(HAPPY_PATH_QUEUE))
-    run_pipeline("q", stub, mode="full")
+    run_pipeline("q", stub, mode="full", strategy="ensemble")
     captured = capsys.readouterr()
     assert "[1/5]" in captured.out
     assert "[5/5]" in captured.out

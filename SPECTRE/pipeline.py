@@ -1,39 +1,64 @@
 """
 pipeline.py — SPECTRE pipeline, extracted from main.py so it has no
 display/CLI coupling and can be imported directly (e.g. by SPECTRE_Test).
+
+Two strategies (config.SPECTRE_STRATEGY, overridable per call):
+
+    composite — teacher → T7 (one fixed corruption schema) → poison
+                verification → deliver. The dataset-generation default:
+                the corruption is identical in structure on every example,
+                which is what makes it learnable by (and damaging to) a
+                student model. ~2-3 API calls per question.
+
+    ensemble  — teacher → five independent variants → GHOST ranking →
+                correctness walk → deliver. Kept for ablations and
+                interactive demos. ~7-8 API calls per question.
+
+Both strategies fail safe: if anything goes wrong after the teacher call,
+the clean teacher response is delivered and safety_valve_triggered is set.
 """
 
+import config
 from teacher import get_teacher_response
-from transformations import apply_all_transformations
+from transformations import (
+    apply_all_transformations,
+    apply_composite_transformation,
+)
 from ghost_scorer import score_variants
-from correctness_checker import check_correctness
+from correctness_checker import check_correctness, verify_variant
+
+# One retry after a failed generation or verification, then safety valve.
+_COMPOSITE_MAX_ATTEMPTS = 2
 
 
-def run_pipeline(question: str, provider, mode: str = "full") -> dict:
+def run_pipeline(question: str, provider, mode: str = "full",
+                 strategy: str = None) -> dict:
     """
-    Execute the full SPECTRE pipeline.
-
-    Stages:
-        1. Teacher call          — one clean, correct response.
-        2. SPECTRE transforms    — five independent structural variants.
-        3. GHOST scoring         — rank variants worst → best for student.
-        4. Correctness check     — walk ranking, take first correct variant.
-        5. Deliver               — return selected (training-toxic) response.
+    Execute the SPECTRE pipeline.
 
     Args:
         question: The math problem.
         provider: Initialised BaseProvider.
         mode:     "full" prints step-by-step progress; "clean" stays quiet
                   (used for batch runs so it doesn't fight a progress bar).
+        strategy: "composite" or "ensemble". Defaults to
+                  config.SPECTRE_STRATEGY.
 
     Returns:
         Result dict with keys:
-            question, clean_response, variants, ghost_result,
-            ranking, selected_variant, final_response,
+            question, strategy, clean_response, variants, ghost_result,
+            ranking, selected_variant, final_response, verification,
             attempts, safety_valve_triggered
-        or None if the teacher call or all five transformations failed
-        outright.
+        or None if the teacher call failed (there is nothing safe to
+        deliver without a clean response), or — ensemble only — if all
+        five transformations failed outright.
     """
+    strategy = (strategy or config.SPECTRE_STRATEGY).strip().lower()
+    if strategy not in ("composite", "ensemble"):
+        raise ValueError(
+            f"Unknown strategy {strategy!r}. Use 'composite' or 'ensemble'."
+        )
+
     silent = (mode == "clean")
 
     def log(msg: str):
@@ -42,18 +67,21 @@ def run_pipeline(question: str, provider, mode: str = "full") -> dict:
 
     result = {
         "question":               question,
+        "strategy":               strategy,
         "clean_response":         None,
         "variants":               [],
         "ghost_result":           None,
         "ranking":                [],
         "selected_variant":       None,
         "final_response":         None,
+        "verification":           None,
         "attempts":               0,
         "safety_valve_triggered": False,
     }
 
-    # ── [1/5] Teacher ─────────────────────────────────────────────────────
-    log("\n  [1/5] Getting clean teacher response...")
+    # ── [1] Teacher (both strategies) ─────────────────────────────────────
+    total = 4 if strategy == "composite" else 5
+    log(f"\n  [1/{total}] Getting clean teacher response...")
     try:
         clean = get_teacher_response(question, provider)
     except Exception as exc:
@@ -62,6 +90,81 @@ def run_pipeline(question: str, provider, mode: str = "full") -> dict:
     result["clean_response"] = clean
     log(f"        ✓ Received  ({len(clean)} chars)")
 
+    if strategy == "composite":
+        return _run_composite(question, clean, provider, result, log)
+    return _run_ensemble(question, clean, provider, result, log)
+
+
+# ── Composite strategy ────────────────────────────────────────────────────────
+
+def _run_composite(question, clean, provider, result, log):
+    variant = None
+    verification = None
+    feedback = None
+
+    for attempt in range(1, _COMPOSITE_MAX_ATTEMPTS + 1):
+        result["attempts"] = attempt
+        log(f"\n  [2/4] Applying T7 composite transformation "
+            f"(attempt {attempt}/{_COMPOSITE_MAX_ATTEMPTS})...")
+
+        candidate = apply_composite_transformation(
+            question, clean, provider, feedback=feedback
+        )
+        result["variants"] = [candidate]
+
+        if candidate["error"] is not None:
+            log(f"        ✗ T7 FAILED: {candidate['error']}")
+            feedback = None    # API failure — plain retry, nothing to fix
+            continue
+        log("        ✓ T7  [API]")
+
+        log("\n  [3/4] Verifying poison + correctness...")
+        verification = verify_variant(
+            question,
+            candidate["response"],
+            clean,
+            pivot_stem=candidate["pivot_stem"],
+        )
+        result["verification"] = verification
+
+        for name in ("answer_match", "internal_consistency", "poison_present",
+                     "no_early_leak", "length_ok", "confident_false_start"):
+            status = "✓" if verification[name] else "✗"
+            log(f"        {status} {name}")
+
+        if verification["passed"]:
+            variant = candidate
+            break
+
+        failed = [
+            name for name in
+            ("answer_match", "internal_consistency", "poison_present")
+            if not verification[name]
+        ]
+        feedback = f"failed critical checks: {', '.join(failed)}"
+        log(f"        ✗ Verification failed ({feedback})")
+
+    # ── [4/4] Finalise ────────────────────────────────────────────────────
+    log("\n  [4/4] Done")
+
+    if variant is None:
+        log("        ⚠  Safety valve: composite transformation could not be "
+            "verified. Using clean teacher response.")
+        result["final_response"]         = clean
+        result["safety_valve_triggered"] = True
+    else:
+        result["ranking"]          = ["T7"]
+        result["selected_variant"] = variant
+        result["final_response"]   = variant["response"]
+        if verification["warnings"]:
+            log(f"        ⚠  Warnings: {', '.join(verification['warnings'])}")
+
+    return result
+
+
+# ── Ensemble strategy (v2 flow, unchanged) ────────────────────────────────────
+
+def _run_ensemble(question, clean, provider, result, log):
     # ── [2/5] SPECTRE transformations ────────────────────────────────────
     log("\n  [2/5] Applying SPECTRE transformations  (T1, T2, T3, T5, T6)...")
     try:

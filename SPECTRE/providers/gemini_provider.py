@@ -26,15 +26,37 @@ class GeminiProvider(BaseProvider):
         return True
 
     def complete(self, prompt: str, max_tokens: int = 1024, system: str = None) -> str:
-        config = genai_types.GenerateContentConfig(
+        # Gemini 2.5+ models spend "thinking" tokens out of max_output_tokens,
+        # which can silently truncate the visible text mid-sentence. Thinking
+        # is disabled here so the full budget goes to output; models that
+        # require a thinking budget (e.g. 2.5-pro) reject budget=0, so fall
+        # back to a plain config for those.
+        base = dict(
             max_output_tokens=max_tokens,
             system_instruction=system if system else None,
         )
-        response = self.client.models.generate_content(
-            model=self._model_name,
-            contents=prompt,
-            config=config,
-        )
+        try:
+            response = self.client.models.generate_content(
+                model=self._model_name,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    **base,
+                    thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
+        except Exception as exc:
+            if "thinking" not in str(exc).lower():
+                raise
+            response = self.client.models.generate_content(
+                model=self._model_name,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(**base),
+            )
+        if not response.text:
+            raise ValueError(
+                "Gemini returned an empty response "
+                "(likely truncated before any visible output)."
+            )
         return response.text
 
     @property
