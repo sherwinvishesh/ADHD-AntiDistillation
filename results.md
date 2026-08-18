@@ -101,7 +101,7 @@ The current default mechanism is **T7, Entangled False-Start**. The protected re
 4. correct recovery with additional brittle computation structure,
 5. correct final answer.
 
-This approach produced a much larger reported degradation. The SPECTRE-trained student scored **34.87%**, which is **4.73 percentage points below the clean student**.
+This approach produced a much larger reported degradation. The SPECTRE-trained student scored **34.80%**, which is **4.80 percentage points below the clean student**.
 
 That is a substantially stronger result than ITRO.
 
@@ -190,7 +190,7 @@ The teacher score is a reference point, not the experimental control. The No-CoT
 | Teacher, Qwen2.5-7B-Instruct | ~85% | N/A | Upper-bound reference |
 | Student-Baseline | **39.6%** | N/A | Clean distillation control |
 | Student-ADHD-ITRO | **39.0%** | **-0.6 pp** | No meaningful degradation |
-| Student-ADHD-SPECTRE | **34.87%** | **-4.73 pp** | Meaningfully larger single-run degradation |
+| Student-ADHD-SPECTRE | **34.80%** | **-4.80 pp** | Meaningfully larger single-run degradation |
 | Student-NoCoT | **~37%** | **~-2.6 pp** | Approximate pretraining/answer-only floor |
 
 Several comparisons are important.
@@ -205,9 +205,9 @@ For the intended purpose of ADHD, this is a null result. The system clearly chan
 
 ## 4.2 SPECTRE versus baseline
 
-SPECTRE reduced accuracy from 39.6% to 34.87%.
+SPECTRE reduced accuracy from 39.6% to 34.80%.
 
-That is a **4.73 percentage point** drop.
+That is a **4.80 percentage point** drop.
 
 The raw gap is approximately **7.9 times larger than the ITRO gap**.
 
@@ -914,8 +914,8 @@ That distinction is central to the SPECTRE post-mortem.
 SPECTRE produced the following reported held-out result:
 
 - Student-Baseline: **39.6%**
-- Student-ADHD-SPECTRE: **34.87%**
-- Gap: **4.73 pp**
+- Student-ADHD-SPECTRE: **34.80%**
+- Gap: **4.80 pp**
 
 Compared with ITRO's 0.6 pp gap, this is a major improvement in effect size.
 
@@ -1108,7 +1108,7 @@ The reported experimental comparison references a Qwen teacher and Qwen students
 
 The current SPECTRE wrapper code exposes Anthropic and Gemini provider implementations and currently defaults to model names such as Claude and Gemini in its configuration.
 
-The student fine-tuning scripts that produced the reported 39.6%, 39.0%, and 34.87% results are not present in the current repository snapshot.
+The student fine-tuning scripts that produced the reported 39.6%, 39.0%, and 34.80% results are not present in the current repository snapshot.
 
 Therefore, the repository contains the defense implementation and test harness, but not every historical artifact needed to reproduce the reported student-training numbers end to end.
 
@@ -1168,8 +1168,8 @@ The source can still be inspected statically, but a reproducibility package shou
 | Scope | Broad, 8 domains | Math-focused |
 | Main corruption type | Variable reasoning obfuscation | Repeated structural poisoning |
 | Student baseline | 39.6% | 39.6% reference |
-| Defended student | 39.0% | 34.87% |
-| Accuracy gap | 0.6 pp | 4.73 pp |
+| Defended student | 39.0% | 34.80% |
+| Accuracy gap | 0.6 pp | 4.80 pp |
 | Relative strength of observed gap | Weak | About 7.9x ITRO's raw gap |
 | Below No-CoT? | No | Approximately yes, by 2.13 pp using the ~37% reference |
 | Training loss | Higher than clean | Much higher than clean |
@@ -1199,19 +1199,19 @@ Using a rough independent-binomial approximation, the standard error of the ITRO
 
 Either way, 0.6 pp is not compelling evidence of an effect.
 
-## 18.2 SPECTRE's 4.73 pp result is much more interesting but still needs replication
+## 18.2 SPECTRE's 4.80 pp result is much more interesting but still needs replication
 
-A 4.73 pp gap is substantially larger than 0.6 pp and is worth pursuing.
+A 4.80 pp gap is substantially larger than 0.6 pp and is worth pursuing.
 
 However, one training run is not enough to establish a stable causal effect.
 
 The next experiment should use multiple seeds for student fine-tuning and report mean accuracy, standard deviation, confidence intervals, and paired per-question comparisons.
 
-## 18.3 The 34.87% value conflicts with an exact 500-question denominator
+## 18.3 The 34.80% value conflicts with an exact 500-question denominator
 
 An evaluation over exactly 500 binary-correctness questions changes accuracy in increments of 0.2 percentage points.
 
-An exact score of **34.87%** cannot come directly from 500 equally weighted correct/incorrect examples.
+An exact score of **34.80%** cannot come directly from 500 equally weighted correct/incorrect examples.
 
 Possible explanations include:
 
@@ -1569,13 +1569,13 @@ SPECTRE should be presented as a partial experimental success and a product-leve
 The evidence supports the following claims:
 
 - SPECTRE produced a much larger reported student-accuracy degradation than ITRO.
-- The 4.73 pp gap is the strongest efficacy signal produced by ADHD so far.
+- The 4.80 pp gap is the strongest efficacy signal produced by ADHD so far.
 - The result is directionally consistent with the idea that repeated structural poisoning can teach harmful reasoning habits rather than merely hide useful reasoning.
 - The SPECTRE student appears to perform below the approximate No-CoT reference, which is especially interesting if confirmed under a clean replicated setup.
 - SPECTRE responses are harder for the student to fit than clean or ITRO responses.
 - The current T7 mechanism is visibly repetitive and can be difficult for humans to read.
 - The current verifier can accept semantically awkward or contradictory reasoning because it verifies structure rather than full naturalness.
-- The exact 34.87% evaluation provenance needs to be recovered because it does not align with a simple 500-question denominator.
+- The exact 34.80% evaluation provenance needs to be recovered because it does not align with a simple 500-question denominator.
 - Multiple training seeds and a harder benchmark are required before making strong claims.
 
 SPECTRE therefore validates a direction, not the final system.
@@ -1588,7 +1588,7 @@ The ADHD project has produced two informative experiments.
 
 The first experiment, ITRO, showed that **making reasoning convoluted is not enough**. The student can ignore variable surface corruption and continue learning from stable answer information and its own pretrained mathematical ability.
 
-The second experiment, SPECTRE, showed that **a more consistent and behaviorally targeted poison can create a much larger degradation signal**. The 4.73 pp reported drop is materially more interesting than ITRO's 0.6 pp result and may indicate active interference with student reasoning.
+The second experiment, SPECTRE, showed that **a more consistent and behaviorally targeted poison can create a much larger degradation signal**. The 4.80 pp reported drop is materially more interesting than ITRO's 0.6 pp result and may indicate active interference with student reasoning.
 
 But SPECTRE also violated a central part of the original ADHD goal. The response itself became too obviously manipulated. The human user can be forced through unnecessary wrong reasoning, and an attacker may be able to detect or sanitize the repeated structure.
 
@@ -1615,7 +1615,7 @@ The project now has a clearer mechanism hypothesis, a stronger experimental sign
 | Teacher reference | ~85% | N/A |
 | Student-Baseline | 39.6% | N/A |
 | Student-ADHD-ITRO | 39.0% | -0.6 pp |
-| Student-ADHD-SPECTRE | 34.87% | -4.73 pp |
+| Student-ADHD-SPECTRE | 34.80% | -4.80 pp |
 | Student-NoCoT | ~37% | ~-2.6 pp |
 
 ## A.2 Baseline training
