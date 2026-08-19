@@ -1,1314 +1,1111 @@
-# ADHD: Adaptive Defense via Honeypot Deception
+# ADHD: Design Rationale and Threat Model
+
+**Adaptive Defense via Honeypot Deception**
 
-## Project Idea and Design Rationale
+Sherwin Vishesh Jathanna · Arizona State University · `sjathann@asu.edu`
+
+## About this document
+
+This is the **design document** for ADHD. It states the threat model, the security objective, the architectural commitments, the per-domain corruption catalogs, and the design principles that produced the ITRO and SPECTRE implementations.
+
+It is deliberately separated from two other documents:
 
-## 1. The Core Idea
+| Document | Role |
+| - | - |
+| **`idea.md`** *(this file)* | Why the system is designed the way it is, threat model, objectives, mechanisms, constraints, open questions |
+| **`results.md`** | What actually happened when it was built and measured |
+| **`Readme.md`** | Repository overview, headline results, installation, usage |
 
-ADHD, short for **Adaptive Defense via Honeypot Deception**, is a defensive framework for protecting capable AI models from unauthorized knowledge distillation through public or semi-public interfaces.
+Where a design claim has since been tested, this document marks the outcome inline with a **`Recorded outcome`** callout rather than leaving the rationale disconnected from the evidence. Those callouts reference the finalized experimental record:
 
-The project begins from a difficult observation: once a model is exposed through an API, an attacker does not need access to its weights in order to learn from it. The attacker can repeatedly query the model, collect prompt and response pairs, and use those outputs as supervision for another model. If the source model produces detailed explanations, worked solutions, code, proofs, analyses, and other structured outputs, then those responses can become a valuable synthetic training set.
+| Model | Correct | GSM8K accuracy | Gap vs. clean |
+| - | -: | -: | -: |
+| Teacher (`Qwen2.5-7B-Instruct`) | 425 / 500 | 85.0 % | n/a |
+| Student-Baseline (clean distillation) | 198 / 500 | 39.6 % | n/a |
+| Student-ITRO | 195 / 500 | 39.0 % | −0.6 pp |
+| Student-SPECTRE | 174 / 500 | 34.8 % | −4.8 pp |
+| Student-NoCoT (no rationale) | 185 / 500 | 37.0 % | −2.6 pp |
 
-ADHD does not try to make model outputs impossible to collect. That is not realistic for a useful API. Instead, it changes the defensive objective.
+> [!IMPORTANT]
+> **Scope of the term "reasoning trace."** Throughout this document, "reasoning trace" means **the visible explanation text returned through an API**. No part of this design accesses, inspects, or modifies a model's hidden internal reasoning. Every mechanism operates on text a user would have received anyway.
 
-The central idea is:
+## Table of contents
 
-> If an attacker is going to collect responses anyway, make the collected responses much less useful as training material while keeping them useful to a human reader.
+**Part I: The problem**
+[1. Core idea](#1-core-idea) ·
+[2. What is actually being protected](#2-what-is-actually-being-protected) ·
+[3. The threat model](#3-the-threat-model) ·
+[4. Why simple defenses are insufficient](#4-why-simple-defenses-are-insufficient) ·
+[5. The reframing](#5-the-reframing)
 
-The desired protected response therefore has two different audiences with two different outcomes.
+**Part II: The objective**
+[6. The security objective](#6-the-security-objective) ·
+[7. Design requirements](#7-design-requirements) ·
+[8. Two separated signals](#8-two-separated-signals) ·
+[9. Graded response and adaptive intensity](#9-graded-response-and-adaptive-intensity)
 
-For a legitimate human user, the response should remain correct, coherent, understandable, and practically useful.
+**Part III: The architecture**
+[10. Formal framework](#10-formal-framework) ·
+[11. Conceptual system architecture](#11-conceptual-system-architecture) ·
+[12. Stage 1: Risk assessment](#12-stage-1-risk-assessment) ·
+[13. Stage 2: Value estimation](#13-stage-2-value-estimation) ·
+[14. Stage 3: Transformation](#14-stage-3-transformation) ·
+[15. Stage 4: Verification and fail-safe](#15-stage-4-verification-and-fail-safe)
 
-For a student model trained on a large collection of protected responses, the explanation should provide inferior reasoning supervision. It should encourage inefficient, brittle, unnecessarily complicated, or otherwise undesirable problem-solving habits rather than clean and generalizable reasoning patterns.
+**Part IV: The mechanism**
+[16. What "pedagogically toxic" means](#16-what-pedagogically-toxic-means) ·
+[17. Per-domain corruption catalogs](#17-per-domain-corruption-catalogs) ·
+[18. Naturalness as a hard constraint](#18-naturalness-as-a-hard-constraint) ·
+[19. Systematic vs. random corruption](#19-systematic-vs-random-corruption) ·
+[20. Obfuscation vs. poisoning](#20-obfuscation-vs-poisoning) ·
+[21. Answer preservation](#21-answer-preservation) ·
+[22. Correctness is necessary but not sufficient](#22-correctness-is-necessary-but-not-sufficient)
 
-The final answer is not supposed to be corrupted. The useful content is not supposed to disappear. The protection is aimed at the **training value of the reasoning path**, not at the correctness of the final result.
+**Part V: The constraints**
+[23. The safety valve](#23-the-safety-valve) ·
+[24. The untouched base model](#24-the-untouched-base-model) ·
+[25. The honeypot property](#25-the-honeypot-property) ·
+[26. Attacker adaptation](#26-attacker-adaptation) ·
+[27. Defense diversity](#27-defense-diversity) ·
+[28. Human utility as a hard constraint](#28-human-utility-as-a-hard-constraint) ·
+[29. High-stakes domains and ethics](#29-high-stakes-domains-and-ethics)
 
-This is the defining idea behind ADHD.
+**Part VI: Boundaries and evaluation**
+[30. What ADHD is not](#30-what-adhd-is-not) ·
+[31. What success would mean](#31-what-success-would-mean) ·
+[32. The economic frame](#32-the-economic-frame) ·
+[33. Position in the defense stack](#33-position-in-the-defense-stack) ·
+[34. Position in the literature](#34-position-in-the-literature)
 
-## 2. The Problem ADHD Is Trying to Solve
+**Part VII: Synthesis**
+[35. The central research question](#35-the-central-research-question) ·
+[36. The fundamental design tension](#36-the-fundamental-design-tension) ·
+[37. Design principles](#37-design-principles) ·
+[38. What the experiments changed about this design](#38-what-the-experiments-changed-about-this-design) ·
+[39. Long-term vision](#39-long-term-vision)
 
-Modern model extraction is not limited to copying facts or memorizing exact outputs. A sufficiently large collection of high-quality model responses can teach a smaller model patterns of behavior that transfer beyond the original examples.
+# Part I: The problem
 
-A detailed response can teach a student model things such as:
+## 1. Core idea
 
-1. How to decompose a problem.
-2. Which intermediate variables to introduce.
-3. Which mathematical operation to perform first.
-4. Which proof strategy is appropriate.
-5. Which algorithmic structure is efficient.
-6. Which pieces of evidence matter in an analysis.
-7. Which assumptions are safe to make.
-8. How to recover from uncertainty.
-9. How to structure a multi-step solution.
-10. How to move from a question to a final answer with minimal wasted reasoning.
+A frontier model's most valuable asset is not the answers it produces. It is **the reasoning process that produces them**.
 
-This means that a response has more value to an extractor than the answer alone.
+An answer is a single point. A reasoning trace is a *demonstration of method*: it shows how to decompose a problem, which operations to select, how to check intermediate results, when to abandon an approach. That generalizes. It is why a small model trained on a large model's reasoning traces can acquire capabilities disproportionate to its size and training budget.
 
-For example, the answer to a mathematics problem may be a single number. That number carries relatively little information. A well-written solution that explains the correct setup, the right operation, the important intermediate steps, and the shortest path to the result contains a reusable reasoning pattern. Thousands of such solutions can form a curriculum.
+This creates an asymmetry with unusual security properties:
 
-The same is true in code. A final program can be copied, but an explanation of why a particular data structure, algorithm, complexity tradeoff, and implementation strategy were chosen can teach more general capabilities.
+> The provider must expose the reasoning trace to be useful. Exposing the reasoning trace is exactly what makes the model cheap to copy.
 
-The same principle extends to proofs, science, logical arguments, procedures, and analytical writing.
+**ADHD's core idea:** rather than choosing between exposing reasoning and withholding it, insert a **deployment-separable transformation layer** between the model and the response. The layer receives a complete, correct response from the parent model and may return a modified version whose *conclusion* is preserved but whose *demonstrated method* is less valuable as training supervision.
 
-ADHD therefore treats the exposed rationale as a defensive surface.
+The name, Adaptive Defense via Honeypot Deception, encodes three commitments:
 
-The project asks whether a model can remain useful as a service while the training signal exposed through suspicious large-scale collection is intentionally degraded.
+| Term | Commitment |
+| - | - |
+| **Adaptive** | Intensity scales with assessed risk and value; ordinary traffic is untouched |
+| **Defense** | Purely reactive; nothing is deployed against an attacker's systems |
+| **Honeypot Deception** | The response should look like an ordinary response, not like a defensive artifact |
 
-## 3. Unauthorized Distillation Is the Threat, Not Distillation Itself
+## 2. What is actually being protected
 
-Knowledge distillation is not inherently malicious. It is a normal and useful machine learning technique when the model owner has authorized it.
+It is worth being precise, because vague framing produces vague defenses.
 
-ADHD is concerned with adversarial or unauthorized extraction, where an external actor uses access to a stronger model to reproduce capabilities that the model owner did not intend to provide as a training dataset.
+**Not protected by ADHD:**
 
-The threat model is therefore not simply "someone trains a student model."
+- model weights (that is an infrastructure security problem),
+- the training corpus,
+- system prompts,
+- the fact that the model can perform a task,
+- final answers to individual questions.
 
-The threat model is closer to the following:
+**Protected by ADHD:**
 
-1. A capable teacher model is available through an API or application.
-2. An external actor can issue many queries.
-3. The actor can vary prompts to cover many tasks and reasoning patterns.
-4. The actor records the returned responses.
-5. The actor converts those interactions into a synthetic training corpus.
-6. A smaller or cheaper student model is fine-tuned on that corpus.
-7. The attacker hopes the student will inherit a meaningful portion of the teacher's capabilities.
+- the **transferable reasoning method** demonstrated in a response,
+- the **structure** of a multi-step solution,
+- the **decision procedure** for selecting operations, strategies, or framings,
+- the aggregate value of a **large collection** of such traces as a training corpus.
 
-The attacker may use many accounts, distribute requests over time, paraphrase prompts, mix benign traffic with extraction traffic, or use several datasets and several source models.
+This distinction matters. ADHD does not attempt to prevent a user from learning the answer to their question; that would be a failed product. It attempts to reduce the value of the response **as one row in a training set of ten thousand rows**.
 
-Because detection will never be perfect, ADHD is designed around the assumption that a defense can sometimes activate for a legitimate user. That assumption is critical. A defense that is only safe when the detector is perfect is not a robust defense.
+The unit of protection is therefore the **corpus**, not the response. A defense that makes a single response marginally less useful but a corpus of 50,000 responses substantially less useful is a success. A defense that ruins individual responses to achieve the same corpus effect is not.
 
-## 4. Why Simple Defenses Are Not Enough
+## 3. The threat model
 
-There are several obvious ways to make an API less useful for extraction, but each can create a serious usability problem.
+### 3.1 The attacker
 
-### 4.1 Returning Wrong Answers
+The attacker is a party that queries a deployed model through its ordinary interface, collects the responses, and fine-tunes a smaller model on the collected pairs. This is **unauthorized distillation**, often called model extraction or knowledge theft.
 
-The simplest poisoning strategy would be to deliberately return incorrect answers to suspicious users.
+The attack is attractive because it is cheap. Training a frontier model requires enormous capital, data, and expertise. Distilling one requires an API key, a query budget, and standard fine-tuning code. The economics strongly favor the attacker.
 
-This can damage collected training data, but it creates an unacceptable failure mode. If a legitimate user is incorrectly classified as an attacker, that person receives false information.
+### 3.2 Why this is not hypothetical
 
-The cost of a false positive is therefore very high.
+Anthropic's February 2026 threat-intelligence report describes three distinct campaigns that collectively generated **more than 16 million exchanges** across roughly **24,000 fraudulent accounts**, with a single campaign exceeding **13 million exchanges**.
 
-ADHD is built around the opposite principle. The final answer should remain correct. The defensive manipulation should occur in the route used to explain or derive that answer.
+Those figures establish three facts that constrain the design:
 
-### 4.2 Refusing to Answer
+| Observation | Design implication |
+| - | - |
+| Collection happens at **scale** | Per-response defenses must aggregate into a corpus-level effect |
+| Collection is **distributed across many accounts** | Per-account rate limits and reputation are insufficient alone |
+| Campaigns are **operationally organized** | The attacker will adapt once a defense is discovered |
 
-A service can refuse suspicious traffic. This is useful in some situations, but it immediately tells the attacker that the defense has activated. It also creates a poor experience for legitimate users who are falsely flagged.
+### 3.3 Attacker capability dimensions
 
-Refusal is an access-control mechanism. ADHD is intended as a deception and training-data defense that can exist alongside access controls.
+Following the formalization of attacker profiles in the extraction literature, a claim about anti-distillation effectiveness is meaningless without specifying:
 
-### 4.3 Removing Detailed Reasoning
+| Dimension | Question | This project's historical experiments |
+| - | - | - |
+| **Query budget** | How many requests can the attacker make? | ≈ 2,000 per arm, small |
+| **Data budget** | How many training examples can they assemble? | 2,000 |
+| **Interface profile** | Text only? Logits? Top-k? Streaming? | Text only |
+| **Training method** | SFT? Preference learning? Multi-teacher? | Direct supervised fine-tuning |
+| **Adaptivity** | Do they filter, paraphrase, or sanitize collected data? | **None** |
 
-Another option is to expose less explanation and provide only short answers.
+> [!WARNING]
+> The last row is the most important limitation of the current evidence. A **non-adaptive** attacker is the weakest attacker in this space. A determined extractor would inspect a sample of collected data, notice systematic artifacts, and preprocess them away. Robustness against that attacker has **not** been demonstrated and belongs in the core threat model, not in future work.
 
-This can reduce the amount of useful supervision available to an extractor, but it also removes something legitimate users often want. Students, researchers, developers, and professionals frequently need an explanation, not only an answer.
+### 3.4 What the defender controls
 
-ADHD asks whether it is possible to preserve the appearance and practical value of an explanation while reducing its usefulness as a clean curriculum for another model.
+The defender controls the response text, the decision to transform, the transformation policy, and the fallback. The defender does **not** control what the attacker does with the response afterward.
 
-### 4.4 Modifying the Base Model
+This asymmetry is the reason naturalness matters so much (see [§18](#18-naturalness-as-a-hard-constraint) and [§25](#25-the-honeypot-property)). Anything the attacker can *see* as defensive, the attacker can *remove*.
 
-A model could also be retrained so that it naturally emits extraction-resistant outputs.
+## 4. Why simple defenses are insufficient
 
-That approach changes the underlying model and can affect every user. It also couples the defense to a particular model family and training process.
+Each simple defense is worth stating explicitly, because each fails for an instructive reason.
 
-The ADHD idea is deliberately external. The protected model can remain unchanged. The defense is applied at inference time after the original response has been produced.
+### 4.1 Rate limiting
 
-### 4.5 Relying Only on Detection
+Fails against distributed collection. Sixteen million exchanges across 24,000 accounts is precisely the shape of traffic that per-account limits do not catch. Aggressive global limits degrade the legitimate product.
 
-Detection is important, but detection alone does not solve the problem.
+### 4.2 Terms-of-service prohibition
 
-A sophisticated extractor can attempt to imitate normal users, rotate identities, vary topics, reduce query rate, or distribute activity across accounts.
+Legally meaningful, technically inert. A prohibition raises the cost of getting caught; it does not raise the cost of the attack itself.
 
-ADHD is designed as a layer that becomes useful after a suspicion signal exists. It does not require the deception mechanism itself to solve the entire bot-detection or abuse-detection problem.
+### 4.3 Account-level detection and banning
 
-### 4.6 The Problem with Immediately Banning Every Suspected Distiller
+Necessary, but reactive and evadable. Detection triggers after collection has occurred. Bans are cheap to route around with new accounts and residential proxies.
 
-A common response to suspected extraction is account enforcement. Providers can restrict access, suspend accounts, or terminate accounts when they believe a user is abusing the service. Anthropic has publicly described fraudulent accounts used for large-scale distillation and notes that banned accounts are often replaced by new ones. OpenAI states that policy enforcement can include limiting or terminating access. Google's Gemini API terms prohibit using the service to develop competing models and prohibit attempts to extract or replicate components of the service.
+### 4.4 Refusing to answer suspicious queries
 
-These controls are useful, especially when the provider has high confidence that an account is conducting unauthorized extraction. If the user really is a distiller, removing access can stop or slow the attack.
+Two failure modes. False positives destroy the legitimate experience for power users, researchers, and heavy API customers, precisely the highest-value segment. And refusal is a **clean signal**: the attacker learns immediately which queries are protected and adjusts.
 
-The difficulty appears when the detector is uncertain. A binary policy creates only two choices: trust the user completely or remove the user completely.
+### 4.5 Withholding the reasoning trace entirely
 
-If the detector is correct, banning the account is beneficial to the defender.
+This is the strongest simple baseline, and it must be taken seriously.
 
-If the detector is wrong, however, a legitimate customer can lose access even though they were using the service normally. The provider may lose a paying customer, create support and appeal costs, damage trust, and punish behavior that only happened to resemble automated extraction.
+> **Recorded outcome.** The no-rationale control scored **185/500 = 37.0 %** against a clean-distilled **198/500 = 39.6 %**. Simply removing the reasoning chain cost the attacker only **2.6 pp**, and it cost the *legitimate user* the entire explanation.
 
-ADHD introduces a third option between unrestricted service and immediate removal:
+Two conclusions follow. First, on grade-school mathematics, a student recovers most of its performance from pretraining and direct question→answer association, so rationale withholding has a low ceiling. Second, and more demanding, **any complex defense must be compared against this baseline, not only against clean distillation.** A mechanism that beats clean distillation by 4.8 pp but beats simple withholding by only 2.2 pp has a much weaker case than the first number suggests.
 
-> Keep serving the suspicious account, but place high-value responses into a protected-response mode.
+### 4.6 Returning wrong answers
 
-This changes the false-positive tradeoff.
+Immediately effective against distillation and immediately fatal to the product. It also inverts the ethical position: the provider becomes a source of confidently false information to users who did nothing wrong.
 
-For a legitimate user who was incorrectly flagged, the answer should still be correct and practically useful. The explanation may be somewhat more roundabout, less elegant, or harder to learn from than the clean version, but the user is not locked out of the service and does not receive a deliberately wrong final answer. The provider keeps the customer relationship while continuing to observe the account and update its confidence.
+**This is the constraint that defines ADHD.** The final answer is not negotiable.
 
-For an actual distiller, the same decision has a very different effect. The attacker remains connected, continues spending money and time collecting responses, and receives outputs whose exposed reasoning has been deliberately made less useful as clean training supervision. The attack is therefore not simply allowed. It is redirected into a lower-value data channel.
+### 4.7 The token-economics observation
 
-This creates a useful asymmetry:
+There is one genuine lever in the simple-defense space: **length**.
 
-1. A false positive remains a customer and still receives a correct answer.
-2. A true positive continues paying the cost of collection while receiving lower-value training material.
-3. The provider does not have to reveal immediately that a detector has fired.
-4. The provider can continue collecting behavioral evidence before deciding whether stronger enforcement is justified.
-5. Very high-confidence or confirmed abuse can still be rate limited, suspended, or banned through the conventional security stack.
+A defended response that is meaningfully longer imposes real costs on the attacker: more tokens purchased, more storage, longer sequences during fine-tuning, more compute per training step.
 
-ADHD therefore does not need to replace account enforcement. It gives the provider a safer response for the uncertain region where an immediate ban may be too aggressive but completely clean access may be too permissive.
+But this cuts both ways. The provider generates those extra tokens too, paying additional latency and inference compute on every protected request.
 
-A useful conceptual policy could therefore be graded rather than binary. Low-risk traffic receives the normal response. Moderately suspicious traffic receives light protection. Strongly suspicious high-value traffic receives more aggressive protection and tighter monitoring. Confirmed abuse can still trigger normal access controls.
+> A length-inflating mechanism is economically useful only if it degrades the attacker's **efficiency per collected token** more than it degrades the provider's **service economics per served request**. Raw token inflation is not a free defensive win.
 
-### 4.7 Token Economics and the Cost of Continuing the Attack
+## 5. The reframing
 
-Protected reasoning will often be longer than the cleanest possible reasoning because the defense may introduce detours, redundant checks, alternative approaches, or additional intermediate steps. This creates another economic effect.
+The simple defenses all share an assumption: that the response is either **given** or **withheld**.
 
-When an API charges for generated output tokens, a distiller collecting protected responses may have to pay for more output tokens per training example. A larger rationale can also increase the attacker's storage, preprocessing, context, and student-training costs. If the attacker keeps the full protected response, the student is trained on more tokens even though those additional tokens are intentionally poor supervision.
-
-From the provider's perspective, this can increase billed usage from a suspicious account. It should not be treated as guaranteed profit, because the provider also pays the compute cost of generating, transforming, and verifying the longer response. The useful property is the economic asymmetry: the attacker can be forced to spend more money and compute to obtain data that is less valuable than the clean data they expected to purchase.
-
-For accounts with uncertain risk, the system should keep this effect modest. A legitimate customer who is falsely flagged should not suddenly receive extremely long and expensive answers. Protection intensity can therefore scale with confidence so that the false-positive experience remains close to normal while high-confidence extraction traffic bears more of the added token cost.
-
-This produces another form of defense in depth. The goal is not merely to corrupt the curriculum. It is also to make extraction less efficient per dollar, per query, and per training token.
-
-## 5. The Reframing
-
-The key reframing behind ADHD is that an API response can serve two functions at the same time.
-
-For the current user, it is an answer.
-
-For a future student model, it is a training example.
-
-Those two uses do not value exactly the same properties.
-
-A human may be satisfied by a solution that is correct, understandable, and complete even if it takes a somewhat strange route.
-
-A student model benefits most from examples whose reasoning is clean, consistent, reusable, generalizable, and easy to imitate.
-
-ADHD attempts to exploit that difference.
-
-Instead of destroying the response, the system tries to preserve **human utility** while reducing **pedagogical utility for model training**.
-
-This is why the project is described as a honeypot.
-
-The attacker should see something that appears worth collecting. The data should not look obviously broken. It should contain the right answer and a plausible explanation. The attacker should have less reason to discard it before training.
-
-At the same time, the patterns inside the explanation should be poor patterns for a student model to internalize.
-
-## 6. What ADHD Protects
-
-ADHD is primarily concerned with the reasoning or rationale that is actually exposed in a response.
-
-It is important to distinguish this from a model's private internal computation. The defense does not need access to hidden internal states or private chain-of-thought. It operates on the text, code, derivation, explanation, proof, procedure, or analysis that the service chooses to expose to the user.
-
-Depending on the application, that exposed material may include:
-
-1. Worked mathematical solutions.
-2. Step-by-step derivations.
-3. Proof sketches or formal proofs.
-4. Explanations of code and algorithms.
-5. Debugging reasoning.
-6. Scientific causal explanations.
-7. Logical arguments.
-8. Procedures and workflows.
-9. Comparisons and analytical evaluations.
-10. Supporting rationale around a factual answer.
-
-The protected object is therefore not "thought" in a metaphysical sense. It is the **supervisory structure present in the output**.
-
-## 7. The Core Security Objective
-
-A useful way to state the ADHD objective is:
-
-> Preserve task utility for the current user while reducing transferable learning value for an unauthorized future student.
-
-That objective creates several simultaneous requirements.
-
-### 7.1 Answer Integrity
-
-The final answer must remain correct.
-
-If the original model says the answer is 42, the protected response should still conclude with 42. If the original response recommends a particular API call, the protected response should not silently recommend a different and incorrect one. If the original proof establishes a theorem, the transformed version must not change what is actually being proven.
-
-Answer integrity is the first invariant.
-
-### 7.2 Human Readability
-
-The response must still make sense to a person.
-
-A protected answer cannot simply become random text, incoherent arithmetic, malformed code, or contradictory prose. If humans immediately find the response unusable, the defense has failed its product requirement even if it damages distillation.
-
-### 7.3 Human Usefulness
-
-Readability alone is not enough. The explanation should still help the user complete the immediate task.
-
-The goal is not to create nonsense that happens to end in the correct answer. The user should still be able to follow the response, apply it, and understand the conclusion.
-
-### 7.4 Reduced Pedagogical Quality
-
-The reasoning path should be worse training material than the clean response.
-
-This may mean it is less direct, less efficient, less reusable, more locally misleading, more dependent on unnecessary steps, or more likely to teach a brittle heuristic.
-
-The exact mechanism depends on the domain.
-
-### 7.5 Stealth
-
-The transformation should not advertise itself.
-
-If every protected response contains the same strange sentence, the same formatting pattern, the same self-correction phrase, or an obviously artificial structure, an attacker can build a filter around it.
-
-A honeypot only works if the bait remains believable.
-
-### 7.6 Diversity
-
-The protected outputs should not all be corrupted in exactly the same surface form.
-
-The underlying defensive objective can be consistent while the wording, structure, location of detours, and specific techniques vary.
-
-This reduces simple pattern-based detection and makes it harder for an attacker to identify a single artifact and remove it.
-
-### 7.7 Fail-Safe Behavior
-
-If the transformation cannot be verified, the original answer should be returned.
-
-The defense should prefer losing an opportunity to poison an extraction dataset over delivering an incorrect response to a real user.
-
-This is one of the most important design principles in ADHD.
-
-## 8. The Two Signals ADHD Should Keep Separate
-
-A mature ADHD system benefits from separating two different questions.
-
-### 8.1 How Suspicious Is This Request or Session?
-
-This is an abuse-detection question.
-
-Signals might come from account behavior, request volume, prompt diversity, repeated benchmark-like queries, unusual automation patterns, identity information, rate patterns, or a separate security system.
-
-This produces a suspicion score or activation decision.
-
-### 8.2 How Valuable Is This Response as Training Data?
-
-This is a pedagogical-value question.
-
-A trivial factual lookup does not expose the same amount of reusable capability as a difficult proof, a deep algorithmic explanation, or a complex multi-step analysis.
-
-The response-value score can consider properties such as:
-
-1. Reasoning depth.
-2. Number of dependent steps.
-3. Generalizability of the method.
-4. Density of expert knowledge.
-5. Amount of reusable structure.
-6. Difference between a shallow answer and an expert answer.
-7. Whether the response demonstrates a broadly useful strategy.
-
-These two signals should not be confused.
-
-A suspicious user asking a low-value question may require little or no transformation.
-
-A suspicious user asking a high-value reasoning question may justify stronger protection.
-
-This separation is where the **adaptive** part of ADHD becomes important.
-
-## 9. Adaptive Protection Intensity
-
-ADHD does not need to apply the same level of transformation to every response.
-
-The intensity can be based on the pedagogical value of the answer and the confidence that the session represents extraction activity.
-
-Conceptually, the system can maintain an intensity value such as a scalar between minimal and strong protection.
-
-A low-intensity transformation might introduce a small amount of unnecessary reasoning without changing the overall structure.
-
-A medium-intensity transformation might combine several inefficient reasoning habits.
-
-A high-intensity transformation might substantially restructure the explanation while still preserving the correct conclusion and human readability.
-
-The important point is that intensity should not mean "make the response more broken."
-
-It should mean "reduce the cleanliness and transferability of the reasoning supervision more aggressively while still satisfying the user-facing invariants."
-
-A difficult question is not automatically high value, and an easy-looking question is not automatically low value. What matters is how much reusable capability the response exposes.
-
-## 10. Conceptual System Architecture
-
-ADHD is best understood as an inference-time wrapper around an existing model.
-
-A simplified architecture is:
+ADHD's reframing is to treat the response as a **channel whose content can be shaped**:
 
 ```text
-User Query
-    |
-    v
-Base Model
-    |
-    v
-Clean Response
-    |
-    v
-ADHD Controller
-    |
-    +-> Suspicion / policy signal
-    |
-    +-> Domain detection
-    |
-    +-> Pedagogical value scoring
-    |
-    +-> Transformation selection
-    |
-    v
-Protected Candidate
-    |
-    v
-Correctness and quality verification
-    |
-    +-> Pass: return protected response
-    |
-    +-> Fail: return clean response
+   Traditional framing              ADHD framing
+   ───────────────────              ────────────
+   answer  ──▶ deliver              answer  ──▶ deliver  (always)
+           ──▶ refuse               method  ──▶ deliver, or transform, or degrade
 ```
 
-The underlying teacher model is not retrained for this process.
+The answer and the method travel through the same channel but have different security properties. The answer is what the user needs. The method is what the attacker needs. **They can be treated differently.**
 
-The defense receives a clean response, decides whether and how strongly to protect it, creates a candidate version, verifies that the candidate still satisfies required invariants, and then either delivers the candidate or falls back to the clean response.
+This is the entire conceptual foundation of the project.
 
-This architecture makes ADHD model-agnostic in principle. The wrapper can sit around different providers, model families, or deployment stacks as long as the system can obtain a response and evaluate the transformed output.
+# Part II: The objective
 
-## 11. Stage 1: Generate the Clean Response First
+## 6. The security objective
 
-The base model should answer normally before any defensive transformation occurs.
+> **Preserve the utility of the response to the requesting human while reducing its value as training supervision for a student model.**
 
-This clean response serves several purposes.
+Restated as an optimization problem: maximize the gap between *human utility* and *distillation utility* of the delivered response, subject to a hard floor on human utility.
 
-First, it preserves a trusted reference for the intended answer.
+Four sub-objectives follow.
 
-Second, it gives the transformation system a complete solution to work from rather than asking the defense to solve the problem independently.
+### 6.1 Final-answer preservation
 
-Third, it enables a safe fallback. If any later stage fails, the system still has the original response available.
+The user receives the parent model's terminal answer. Always. This is a hard constraint, not a target.
 
-Fourth, it allows the verifier to compare the protected candidate with the original result.
+### 6.2 Human comprehensibility
 
-The clean response is therefore the anchor for the entire pipeline.
+The delivered explanation must remain understandable, coherent, and reasonably efficient to read. A response the user has to fight through has failed even if it is technically correct.
 
-## 12. Stage 2: Identify the Reasoning Domain
+### 6.3 Measurable student degradation
 
-Different kinds of reasoning require different defensive transformations.
+A model fine-tuned on a corpus of defended responses should perform measurably worse than one fine-tuned on clean responses, and, to justify its complexity, worse than one trained on no rationales at all.
 
-A corruption that is meaningful for mathematics may be nonsensical in code. A technique that hurts algorithmic pedagogy may not affect a factual response. ADHD should therefore classify the type of reasoning before choosing a transformation.
+### 6.4 Fail-safe behavior
 
-A broad system can recognize domains such as:
+When the system cannot verify that a transformed response satisfies its constraints, it delivers the **clean** response. Failure of the defense must never become failure of the product.
 
-### 12.1 Mathematical Computation
+## 7. Design requirements
 
-Arithmetic, algebra, equations, numerical word problems, symbolic manipulation, and quantitative derivations.
+These are the requirements the implementations were built against.
 
-### 12.2 Mathematical Proof
+| # | Requirement | Rationale | Enforcement |
+| :-: | - | - | - |
+| **R1** | Terminal answer preserved exactly | The user's task must still be completed | Programmatic: answer extracted from clean response and appended to the transformed one |
+| **R2** | Explanation remains human-usable | A defense that ruins the product is not deployable | **Currently under-enforced** (see [§22](#22-correctness-is-necessary-but-not-sufficient)) |
+| **R3** | Transformation verifiably present | A silently-clean corpus makes the arm meaningless | Structural verifier check for poison presence |
+| **R4** | Fail-safe on any verification failure | Defense failure must degrade to normal service | Retry, then clean fallback |
+| **R5** | Parent model unmodified | Deployment separability; no retraining risk | Architectural: the layer is external |
+| **R6** | Activation is selective | Ordinary traffic must not pay the cost | Risk gate before transformation |
+| **R7** | Transformation is not trivially detectable | A detectable defense is a removable defense | **Currently under-enforced** (see [§25](#25-the-honeypot-property)) |
+| **R8** | Bounded cost per request | Latency and tokens are real product constraints | Token and character budgets |
 
-Induction, contradiction, direct proof, inequalities, existence arguments, formal derivations, and theorem-oriented reasoning.
+> **Recorded outcome.** R1, R3, R4, R5, R6, and R8 are enforced in the implementation. **R2 and R7 are the two requirements the SPECTRE experiment showed are not adequately enforced**: the verifier checks structure, not semantics or stealth. This is the single most important gap in the current design.
 
-### 12.3 Code and Algorithms
+## 8. Two separated signals
 
-Implementation, debugging, data structures, algorithm design, complexity analysis, refactoring, and software reasoning.
+A recurring design error in this space is collapsing two distinct questions into one score. ADHD keeps them separate.
 
-### 12.4 Scientific Reasoning
+### Signal 1: Request risk
 
-Mechanistic explanations, causal chains, physical reasoning, biological processes, chemistry, and scientific interpretation.
+*How likely is it that this request is part of a systematic extraction effort?*
 
-### 12.5 Logical Argument
+Inputs are behavioral and account-level, not content-level:
 
-Deductive reasoning, validity, premises, implications, case analysis, and structured argumentation.
+- query volume and rate,
+- topical concentration and systematic coverage of a domain,
+- absence of ordinary conversational patterns (follow-ups, clarifications, corrections),
+- similarity to other accounts' query distributions,
+- account age, payment history, and provenance,
+- programmatic access patterns.
 
-### 12.6 Factual Recall
+### Signal 2: Response value
 
-Definitions, names, dates, direct factual questions, and short knowledge lookups.
+*If this response were collected, how much would it teach a student model?*
 
-### 12.7 Procedural Reasoning
+Inputs are content-level:
 
-Instructions, workflows, deployment sequences, troubleshooting procedures, and operational guides.
+- depth of the reasoning chain,
+- generalizability of the demonstrated method beyond this instance,
+- density of expert knowledge,
+- dependence on frontier capability the student does not already have.
 
-### 12.8 Analytical Reasoning
+### Why they must stay separate
 
-Comparisons, tradeoffs, synthesis, decision analysis, interpretation, and multi-factor evaluation.
+They answer different questions and fail differently.
 
-The classification does not have to be perfect, but it allows the transformation layer to operate with domain-specific semantics instead of applying generic textual noise.
+- A **high-risk, low-value** request (bulk-collecting trivia) does not need transformation; there is nothing worth protecting.
+- A **low-risk, high-value** request (a researcher's hard question) must not be transformed; the user deserves the real explanation.
+- Only the **high-risk, high-value** intersection warrants intervention.
 
-## 13. Stage 3: Estimate Pedagogical Value
+Collapsing them into one "suspicion score" loses exactly this structure and produces a system that either over-triggers on ordinary hard questions or under-triggers on systematic collection of valuable ones.
 
-The next question is not simply "how hard is this?"
+## 9. Graded response and adaptive intensity
 
-The better question is:
+ADHD is explicitly **graded**. There is no binary "defend / don't defend" switch.
 
-> How much would a student model benefit from training on a clean version of this response?
+| Risk level | Response |
+| - | - |
+| **Low risk** | Deliver the clean response unchanged. This is the overwhelming majority of traffic. |
+| **Uncertain / moderate risk** | Deliver the clean response. Uncertainty resolves in the user's favor. |
+| **High risk, low response value** | Deliver the clean response. Nothing worth protecting. |
+| **High risk, high response value** | Apply transformation, with intensity scaled to assessed value. |
 
-A useful conceptual scoring system can consider several dimensions.
+The design bias is deliberate and asymmetric: **a false negative costs the provider some marginal training value; a false positive costs a legitimate user their explanation.** The second is worse, so the gate is conservative.
 
-### 13.1 Reasoning Depth
+### The τ intensity parameter
 
-How many dependent steps are necessary to solve the problem correctly?
+The ITRO implementation formalizes response value as a scalar τ:
+
+```
+τ_raw = 0.35·(reasoning depth)
+      + 0.30·(generalizability)
+      + 0.20·(expert density)
+      + 0.15·(frontier dependency)
+```
+
+| Dimension | Weight | What it captures |
+| - | -: | - |
+| Reasoning depth | 0.35 | Number and interdependence of inferential steps |
+| Generalizability | 0.30 | Whether the method transfers beyond this instance |
+| Expert density | 0.20 | Concentration of specialist knowledge |
+| Frontier dependency | 0.15 | Whether the capability is one a small model lacks |
+
+τ is then clipped by per-domain floors and ceilings, which encode a prior about how much protection a domain warrants and how much distortion it can tolerate:
+
+| Domain | τ floor | τ ceiling | Reasoning |
+| - | -: | -: | - |
+| Factual recall | 0.05 | 0.35 | Little transferable method; high distortion risk |
+| Procedural | 0.15 | 0.60 | Some method value; users follow steps literally |
+| Math computation | 0.35 | 0.72 | Verifiable, transferable, moderate protection |
+| Logical argument | 0.30 | 0.85 | Highly transferable reasoning structure |
+| Scientific | 0.40 | 0.90 | Dense expert knowledge |
+| Analytical | 0.40 | 0.92 | Framing and evaluation methods transfer strongly |
+| Code | 0.10 | 0.95 | Wide range: trivial snippets to novel algorithms |
+| Math proof | 0.55 | 1.00 | Highest method value; the most worth protecting |
 
-A response with several tightly connected steps can expose more reusable problem-solving structure than a one-step lookup.
+> [!NOTE]
+> These weights and bounds are **engineering heuristics**, not empirically calibrated estimates of learning value. τ estimates *how valuable a response looks*; it does not measure *how much a student actually gains from it*. Closing that gap, by replacing heuristic τ with a measured proxy for student learning gain, is an open research problem.
 
-### 13.2 Generalizability
+# Part III: The architecture
 
-Does the method transfer to many similar problems?
+## 10. Formal framework
 
-A reusable algebraic technique, proof method, algorithmic pattern, or analytical framework may be especially valuable to a student model.
+Let `T` be the parent model, `q` a query, and `c = T(q)` the clean response.
 
-### 13.3 Expert Density
+A response transformation is a function `R` producing a candidate `c̃ = R(q, c)`.
 
-How much specialized knowledge or expert judgment is compressed into the response?
+A verifier `V(q, c, c̃) ∈ {0, 1}` decides whether the candidate satisfies the deployment contract.
 
-Some responses reveal decisions that would otherwise require significant training or experience to learn.
+The delivered response is:
 
-### 13.4 Capability Dependence
+```
+        ⎧ c̃   if V(q, c, c̃) = 1
+   y =  ⎨
+        ⎩ c    otherwise
+```
 
-Would a substantially weaker model be likely to produce the same quality of answer without the teacher's supervision?
+Three properties of this formulation are the reason the architecture was chosen.
 
-If the response exposes a capability that weaker models struggle to reproduce, it may deserve stronger protection.
+| Property | Consequence |
+| - | - |
+| `T` appears only as a black box | The parent model is never retrained or modified |
+| `V` gates every delivery | Verifier failure degrades to clean service, never to bad service |
+| `R` and `V` are independent components | Transformations can be swapped, ablated, and compared without touching the model |
 
-The resulting score can control how much defensive transformation is attempted.
+**The deployment cost of this separability is real.** `R` operates only on completed text. It has no access to logits, sampling randomness, or intermediate states, all of which serving-time defenses can use. ADHD trades mechanism strength for deployment simplicity, and whether that trade is worthwhile is an open empirical question ([§34](#34-position-in-the-literature)).
 
-## 14. Stage 4: Transform the Reasoning Path
+## 11. Conceptual system architecture
 
-This is the core of the ADHD idea.
+```text
+                              ┌──────────────┐
+              request  ──────▶│ Risk assess  │
+                              └──────┬───────┘
+                                     │
+                       ┌─────────────┴──────────────┐
+                  low/uncertain                    high
+                       │                            │
+                       │                     ┌──────▼───────┐
+                       │                     │ Value est. τ │
+                       │                     └──────┬───────┘
+                       │                            │
+                       │              ┌─────────────┴────────────┐
+                       │          low value                 high value
+                       │              │                          │
+                       │              │                   ┌──────▼───────┐
+                       │              │                   │  Transform   │
+                       │              │                   └──────┬───────┘
+                       │              │                          │
+                       │              │                   ┌──────▼───────┐
+                       │              │                   │    Verify    │
+                       │              │                   └──┬────────┬──┘
+                       │              │                 pass │        │ fail
+                       │              │                      │        │
+                       ▼              ▼                      ▼        ▼
+                  ┌─────────────────────────────────────────────────────┐
+                  │  clean response  │ clean │ clean │ transformed │clean│
+                  └─────────────────────────────────────────────────────┘
+```
 
-The system does not aim to make the response visibly incorrect. Instead, it changes **how the solution appears to be reached**.
+Every path that is not "high risk **and** high value **and** verification passed" delivers the clean response. This is the structural expression of the conservative bias in [§9](#9-graded-response-and-adaptive-intensity).
 
-A good transformation has three properties at the same time:
+## 12. Stage 1: Risk assessment
 
-1. The final conclusion remains correct.
-2. A human can still follow the response.
-3. The reasoning is worse as a reusable example for a student model.
+Determines whether the request is plausibly part of systematic extraction. Operates on behavioral and account-level signals ([§8](#8-two-separated-signals)), not on whether the question is hard.
 
-This can be achieved through different forms of controlled reasoning degradation.
+**Design commitments:**
 
-## 15. What "Pedagogically Toxic" Means
+- Assessment must be cheap, it runs on every request.
+- Uncertainty resolves toward "no transformation."
+- The signal must not be inferable from the response, or the attacker learns the detector's boundary by probing.
 
-The phrase "pedagogically toxic" does not mean random garbage.
+**Open problem.** A robust risk detector is itself a substantial research project, and the historical experiments bypass it entirely; they assume the gate has already fired and study only what happens downstream. A production system needs both halves.
 
-Random garbage is easy to detect and easy to discard.
+## 13. Stage 2: Value estimation
 
-The useful target is a response that remains locally plausible but teaches undesirable habits when repeated at scale.
+Computes τ ([§9](#9-graded-response-and-adaptive-intensity)) and determines whether the response is worth protecting and at what intensity.
 
-Examples of undesirable habits include:
+Requires domain classification first, since τ bounds are domain-specific. The ITRO implementation recognizes eight domains and falls back to `factual_recall`, the lowest-intensity domain, on classification failure. **The fallback direction is deliberate: an unclassifiable response gets the least intervention.**
 
-1. Taking an unnecessarily long route before using the relevant idea.
-2. Trying a plausible but inferior approach before the correct one.
-3. Introducing unnecessary intermediate variables.
-4. Rechecking already-established facts repeatedly.
-5. Expanding simple operations into cumbersome decompositions.
-6. Exploring irrelevant branches before returning to the useful branch.
-7. Using an inefficient algorithm when a simpler one is available.
-8. Adding unnecessary premises to a logical argument.
-9. Overcomplicating a direct causal explanation.
-10. Treating simple decisions as if they require excessive uncertainty.
-11. Presenting a weak heuristic as an attractive first instinct and correcting it only later.
-12. Obscuring the most generalizable insight inside less reusable material.
+## 14. Stage 3: Transformation
 
-A human reader can often tolerate a detour because the reader cares about solving the current problem.
+Applies a domain-appropriate transformation at the computed intensity. The two implemented families are described in [§17](#17-per-domain-corruption-catalogs) and [§20](#20-obfuscation-vs-poisoning).
 
-A student model trained across thousands of examples may learn the detour itself as part of the solution distribution.
+**Design commitments:**
 
-That difference is the opportunity ADHD tries to exploit.
+- The transformation must be reproducible for a given query, so behavior is auditable and a repeated query does not obviously produce a different defensive artifact.
+- The transformation must operate within a bounded token budget.
+- The transformation must not require modifying `T`.
 
-## 16. Mathematical Reasoning
+## 15. Stage 4: Verification and fail-safe
 
-Mathematics is a natural domain for this idea because the final answer can often be checked independently from the route used to obtain it.
+The verifier is the component that makes the architecture safe to deploy, and it is where the design is currently weakest.
 
-Possible transformation families include the following.
+### What the SPECTRE verifier checks
 
-### 16.1 Suboptimal Decomposition
+| Check | Type | Tests |
+| - | :-: | - |
+| `answer_match` | **blocking** | The variant's terminal answer equals the clean answer |
+| `internal_consistency` | **blocking** | The last number in the body equals the terminal answer |
+| `poison_present` | **blocking** | The expected transformation artifact is actually present |
+| `no_early_leak` | warning | The answer does not appear in the first 60 % of the body |
+| `length_ok` | warning | The body stays within the character budget |
+| `confident_false_start` | warning | The false start contains no hedging markers |
 
-A clean operation can be replaced by several equivalent steps.
+### What it does not check
 
-Instead of immediately applying the simplest arithmetic or algebraic operation, the explanation may decompose it into smaller operations that eventually reach the same value.
+- whether the explanation is naturally written,
+- whether the reasoning is *semantically* coherent,
+- whether a correction logically refers to what was actually computed,
+- whether the transformation is detectable,
+- whether a human would find the response usable.
 
-The current user still receives a valid derivation, but the response is a poorer model of efficient mathematical reasoning.
+> [!CAUTION]
+> **`answer_match` is largely guaranteed by construction**, because the pipeline strips any generated answer line and appends the teacher's original. It is a valid engineering strategy for satisfying R1, but it is **not independent evidence** that the transformed reasoning body is correct.
 
-### 16.2 Wrong Approach First
+### The failure this produced
 
-The explanation can begin with a plausible method that turns out to be inconvenient, insufficient, or locally mistaken, then recover and proceed correctly.
+> **Recorded outcome: the Natalia case.** Problem: Natalia sells 48 clips in April and half as many in May; how many altogether? (Clean: 24 in May, **72** total.) The transformation computed `48 × 2 = 96`, described 96 as the *April-plus-May total*, then pivoted by arguing that 96 "cannot be correct for May alone", a claim about something the response had never asserted. It then recovered to 72.
+>
+> **All six verification flags passed.** The response is answer-correct, structurally valid, and locally self-contradictory.
 
-The critical constraint is that the recovery must be understandable to a person and the final mathematics must be correct.
+This single artifact is more informative than the accuracy tables. It demonstrates that **structural verification is not a proxy for semantic validity**, and that R2 is genuinely unenforced rather than merely imperfectly enforced.
 
-### 16.3 Redundant Verification
+### The ITRO fail-open gap
 
-The response can solve the problem correctly and then re-derive or re-check the result using an unnecessary secondary path.
+A second, independent verification weakness: ITRO's semantic-equivalence check for non-mathematical domains is coded to **fail open**, returning "equivalent" when an exception occurs. The general system therefore cannot claim strict fail-safe answer preservation across all domains. Mathematics, where answers are extracted and compared numerically, is unaffected.
 
-This adds extra reasoning tokens without adding much reusable value.
+# Part IV: The mechanism
 
-### 16.4 Overcomplicated Setup
+## 16. What "pedagogically toxic" means
 
-A problem that can be solved with one variable may be expressed with several intermediate quantities or equations.
+The central mechanism concept. A response is **pedagogically toxic** if it is correct in its conclusion but teaches a method that a learner should not adopt.
 
-The transformation must remain logically coherent, but it can hide the simplest abstraction.
+The distinction from ordinary wrongness:
 
-### 16.5 Backward or Circular Presentation
+| | Answer | Method | Human impact | Student impact |
+| - | :-: | :-: | - | - |
+| Clean response | correct | good | ideal | learns well |
+| **Pedagogically toxic** | **correct** | **poor** | task completed | learns poor method |
+| Wrong response | incorrect | n/a | task failed | learns wrong facts |
+| No rationale | correct | absent | task completed, no learning | learns nothing new |
 
-Some reasoning can be presented from the desired conclusion backward toward the givens, then reconnected to a forward derivation.
+ADHD targets row two. The user gets what they came for. The student, which learns from *method* rather than from single answers, absorbs something less useful.
 
-A human may understand the verification, while a student receives a less clean example of the natural forward solution path.
+Concretely, a pedagogically toxic mathematical response might:
 
-### 16.6 Primitive Computation
+- select a legitimate but distinctly suboptimal solution strategy,
+- decompose operations into unnecessary primitive steps,
+- add redundant verification that teaches inefficient checking habits,
+- take algebraically valid but purposeless detours,
+- overcomplicate a setup that has an obvious simple form,
+- demonstrate a wrong operation confidently before correcting it.
 
-A compact operation can sometimes be expanded into repeated simpler operations.
+Each preserves correctness. Each degrades the demonstrated method.
 
-The goal is not to make arithmetic unreadable. The goal is to reduce how often the response demonstrates the most efficient reusable computational pattern.
+## 17. Per-domain corruption catalogs
 
-## 17. Mathematical Proof
+These catalogs were developed for ITRO's eight-domain design. They remain the reference for what transformation means in each domain, even though only mathematics has been experimentally tested.
 
-Proofs expose strategy, not just answers, so they can contain particularly valuable training signal.
+### 17.1 Mathematical computation
 
-Possible defensive transformations include:
+| Technique | Description |
+| - | - |
+| Suboptimal method | A legitimate approach that is clearly not the natural one |
+| Wrong-approach-first | Begin with an incorrect operation, then correct |
+| Redundant verification | Check results in ways that add no information |
+| Unnecessary transformation | Algebraically valid manipulations that do not advance the solution |
+| Primitive decomposition | Expand compact operations into repeated elementary ones |
+| Identity operations | Steps that provably do not change the value |
+| Overcomplicated setup | Introduce structure the problem does not require |
 
-### 17.1 Inferior Proof Strategy First
+### 17.2 Mathematical proof
 
-Begin with a plausible proof technique that creates unnecessary difficulty, then switch to a better method.
+| Technique | Description |
+| - | - |
+| Inferior proof strategy | Start from a strategy that works but obscures the key insight |
+| Unnecessary lemmas | Prove intermediate results the main argument does not need |
+| Excessive case splitting | Divide into cases that a better argument handles uniformly |
+| Algebraic detour | Reach a correct conclusion by a longer symbolic route |
 
-### 17.2 Unnecessary Lemmas
+*Highest τ ceiling (1.00): proof method is the most transferable and hardest-to-acquire capability in the catalog.*
 
-Introduce intermediate results that are true but not needed for the proof.
+### 17.3 Code
 
-### 17.3 Excessive Case Splitting
+| Technique | Description |
+| - | - |
+| Poor algorithmic structure | Preserve functionality, degrade the algorithm |
+| Suboptimal data structures | Choose structures that work but scale badly |
+| Unnecessary indirection | Add layers that do not aid clarity |
+| Inefficient control flow | Loop or branch in ways a competent engineer would not |
 
-Divide a proof into more cases than necessary while keeping each branch correct.
+**Hard constraint: the code must still run correctly.** A transformation that breaks execution violates R1 in the code domain; the "answer" is working software.
 
-### 17.4 Overdeveloped Base Cases
+*Widest τ range (0.10-0.95): a snippet and a novel algorithm require very different treatment.*
 
-In an induction proof, check more initial cases than the argument strictly requires.
+### 17.4 Scientific explanation
 
-### 17.5 Redundant Algebra
+| Technique | Description |
+| - | - |
+| Plausible wrong mechanism | Begin from an incorrect causal story, then correct |
+| Misordered causal chain | Present causes in a sequence that obscures the mechanism |
+| Excessive qualification | Bury the mechanism in caveats |
+| Wrong level of abstraction | Explain at a level that does not illuminate the phenomenon |
 
-Perform expansions, substitutions, and simplifications that eventually return to a more useful expression.
+> [!WARNING]
+> This is the domain where the risk of leaving a user with a **false belief** is highest, because the reader typically cannot verify the mechanism independently. The correction must be unmistakable. See [§29](#29-high-stakes-domains-and-ethics).
 
-The protected proof should still prove the theorem. The degradation is in elegance, transferability, and strategy quality.
+### 17.5 Logical argument
 
-## 18. Code and Algorithmic Reasoning
+| Technique | Description |
+| - | - |
+| Weaker argument first | Lead with a valid but less compelling line |
+| Redundant premises | Include premises the conclusion does not need |
+| Suboptimal argument order | Present steps in an order that obscures the structure |
+| Unnecessary formalization | Add formal machinery where prose suffices |
 
-Code introduces a different opportunity. A response can be functionally correct while embodying poor engineering or algorithmic habits.
+### 17.6 Factual recall
 
-Possible transformations include:
+| Technique | Description |
+| - | - |
+| Excessive hedging | Wrap a certain fact in unnecessary uncertainty |
+| Irrelevant context | Surround the fact with material that does not bear on it |
+| Indirect delivery | Reach the fact by a longer route |
 
-### 18.1 Complexity Inflation
+*Lowest τ ceiling (0.35). A fact contains almost no transferable method, so there is little to protect and a high risk of merely annoying the user. This is also the classification fallback domain, the safest place to land when uncertain.*
 
-Use a correct but less efficient algorithm where the user has not explicitly required optimal complexity.
+### 17.7 Procedural instruction
 
-This must be constrained carefully. The defense should not produce software that violates the user's functional requirements or creates unacceptable operational risk.
+| Technique | Description |
+| - | - |
+| Suboptimal ordering | Sequence steps in a workable but inefficient order |
+| Unnecessary steps | Include steps that do not affect the outcome |
+| Over-specification | Add detail that does not help execution |
 
-### 18.2 Redundant Data Passes
+> [!WARNING]
+> Users follow procedures **literally**. A procedure that is merely inefficient is acceptable; one that could cause harm if followed exactly is not. τ ceiling is held at 0.60 for this reason.
 
-Recompute information that could have been retained from an earlier pass.
+### 17.8 Analytical response
 
-### 18.3 Unnecessary Data Conversions
+| Technique | Description |
+| - | - |
+| Unhelpful evaluative frame | Analyze from an angle that obscures the key consideration |
+| Misweighted factors | Emphasize less decisive factors first |
+| Excessive enumeration | List considerations rather than synthesizing them |
 
-Move between lists, sets, dictionaries, strings, or other structures more often than necessary.
+## 18. Naturalness as a hard constraint
 
-### 18.4 Excessive Helper Functions
+A defended response must look like an ordinary response from a capable model that happened to take a suboptimal path, **not** like a sabotaged response.
 
-Split trivial operations into extra abstractions that make the implementation harder to imitate cleanly.
+This constraint exists for two independent reasons.
 
-### 18.5 Verbose Conditionals
+### 18.1 The product reason
 
-Use longer conditional structures in place of a concise expression.
+A user who can see that their response was deliberately degraded has been told, implicitly, that the provider does not trust them. That is a worse outcome than a refusal, because it comes with the pretense of service.
 
-### 18.6 Inferior Algorithm First
+### 18.2 The security reason
 
-Discuss or partially sketch a weaker approach before presenting the usable implementation.
+This is the sharper one. **Anything an attacker can detect, an attacker can remove.**
 
-For code, ADHD must be especially careful about the distinction between pedagogical inefficiency and harmful software quality. Correctness, security, safety, and explicit performance requirements must take priority over the defensive transformation.
+If defended responses carry a recognizable signature, the attacker's counter-move is trivial and requires no understanding of the mechanism:
 
-## 19. Scientific and Causal Reasoning
+- filter out responses matching the signature,
+- strip text before a recognizable pivot marker,
+- pass every response through a cheap rewriting model,
+- train only on question-answer pairs, discarding the trace.
 
-Scientific explanations often teach causal structure.
+> **Recorded outcome.** SPECTRE's T7 transformation uses a **fixed opening sentence**, a false start in a **consistent structural position**, a pivot drawn from a **20-stem pool**, and a **recurring primitive-decomposition pattern**. It is straightforwardly fingerprintable. The mechanism that made it learnable by the student is the same mechanism that made it detectable by an attacker (see [§36](#36-the-fundamental-design-tension)).
 
-A clean answer may identify the important variables and connect them in a short mechanistic chain. A protected version can remain scientifically correct while being less direct.
+## 19. Systematic vs. random corruption
 
-Possible strategies include:
+An early and important design question: should the corruption be **varied** across responses or **consistent**?
 
-1. Introducing a plausible but ultimately unnecessary factor.
-2. Exploring an analogy before explaining where the analogy stops being useful.
-3. Taking a longer causal route between the same endpoints.
-4. Re-explaining the mechanism from a second perspective after the conclusion is already established.
-5. Delaying the most important causal relationship until later in the answer.
+The two positions:
 
-The defense must not introduce false scientific claims that remain uncorrected. The final explanation should still allow the human reader to understand the actual mechanism.
+| | Argument | Cost |
+| - | - | - |
+| **Random / varied** | Harder to fingerprint; each response looks individually plausible | The student may treat it as noise and learn around it |
+| **Systematic / consistent** | The student encounters the same pattern thousands of times and absorbs it | Trivially fingerprintable |
 
-## 20. Logical Reasoning
+Both implementations tested one side of this.
 
-Logical arguments can be made less pedagogically clean by changing the route without changing the conclusion.
+> **Recorded outcome.** ITRO chose variety: the corruption differed per response. Result: **195/500 = 39.0 %** against a clean **198/500 = 39.6 %**. A **0.6 pp** gap, three questions. The student largely learned around it.
+>
+> SPECTRE chose consistency: the same structural poison in the same position across the corpus. Result: **174/500 = 34.8 %**, a **4.8 pp** gap and 24 fewer correct answers, **8.0×** ITRO's raw effect.
 
-Possible strategies include:
+The evidence favors consistency for *effectiveness* and variety for *stealth*. Neither implementation found the middle.
 
-1. Exploring an irrelevant inference branch before using the valid one.
-2. Introducing a premise and later showing that it was unnecessary.
-3. Expanding a compact inference into many small steps.
-4. Verifying the conclusion through an additional logical form after it has already been established.
-5. Considering unnecessary cases before collapsing them into the actual argument.
+**The refined design target** is a transformation that is:
 
-Again, the final inference must remain valid.
+- consistent in the **latent features a student model learns from**,
+- variable in the **surface features a human or attacker notices**.
 
-## 21. Factual Responses
+Whether those two feature sets can be separated is the project's central open question.
 
-Direct factual questions contain less reasoning structure, so aggressive transformation may not be justified.
+## 20. Obfuscation vs. poisoning
 
-For these responses, ADHD can use minimal protection or none at all.
+The two implementations embody two different theories of how a response can be made less valuable.
 
-If a transformation is used, it might add context, qualification, or surrounding explanation while preserving the factual answer clearly.
+### Obfuscation (ITRO)
 
-The adaptive system should recognize that not every response needs to be turned into a complicated reasoning path. Doing so would hurt users without meaningfully changing the value of the extracted data.
+*Make the correct reasoning harder to extract.* The path is still correct; it is just inefficient, indirect, or cluttered. The student must work harder to recover the signal.
 
-## 22. Procedural Reasoning
+**Theory of effect:** raise the cost of learning.
 
-Procedures are another form of reusable supervision.
+> **Recorded outcome.** ITRO responses were genuinely harder to fit, average training loss **0.2555** against **0.1637** for clean, roughly **+56 %**. Final gradient norms were nearly identical (0.1919 vs. 0.1846), so no optimization instability. And held-out accuracy moved **0.6 pp**.
+>
+> **The lesson: optimization difficulty is not capability degradation.** A student can struggle to reproduce a response's surface form while still learning the question→answer mapping the benchmark measures.
 
-A protected procedure can remain executable while being less elegant as a general workflow.
+### Poisoning (SPECTRE)
 
-Possible transformations include:
+*Teach a behavior that actively interferes with the student's own reasoning.* Not "hide the good method" but "install a bad habit."
 
-1. Breaking simple steps into more substeps than necessary.
-2. Adding redundant verification checkpoints.
-3. Explaining edge cases between major steps.
-4. Introducing an initially less convenient ordering and then correcting the order before execution.
-5. Repeating state checks that a skilled operator would normally infer.
+**Theory of effect:** make the student worse, not merely less-taught.
 
-Safety-critical procedures require stricter rules. The defense should never deliberately degrade instructions in a way that could create physical, financial, security, medical, or operational harm.
+The mechanism relies on autoregressive propagation: if a student learns to begin with a confident wrong operation, the wrong intermediate value conditions everything downstream. That is a route to falling *below* the no-rationale floor, which pure withholding can never achieve.
 
-## 23. Analytical Reasoning
+> **Recorded outcome.** SPECTRE's average loss was **0.3512** (≈ +115 % over clean, ≈ +37 % over ITRO) with the highest final gradient norm (0.2439) and no divergence. Accuracy dropped to **34.8 %**, **2.2 pp below** the 37.0 % no-rationale control, which is the comparison that matters.
+>
+> **Caveat.** This is one run. SPECTRE also changes sequence length, answer position, and lexical regularity, so ordinary distribution shift remains a competing explanation. The propagation mechanism is a **hypothesis**, not a measured result; no student-side trajectory analysis was performed.
 
-Analytical responses often reveal frameworks that are reusable across many questions.
+### The distinction that matters
 
-A strong answer may identify the decisive criteria immediately. A protected answer can preserve the final recommendation while making the route less clean.
+| | Ceiling |
+| - | - |
+| Withholding / obfuscation | Bounded by the student's pretrained capability floor |
+| Poisoning | Can, in principle, push *below* that floor |
 
-Possible transformations include:
+This is why the project moved from ITRO to SPECTRE, and why the no-rationale control is the benchmark that defines success.
 
-1. Starting with a weaker evaluative frame, then replacing it.
-2. Considering a comparison dimension that turns out not to affect the decision.
-3. Breaking useful criteria into unnecessary subcriteria.
-4. Giving excessive weight to a minor tradeoff before rebalancing the analysis.
-5. Re-deriving the final conclusion from a second perspective.
+## 21. Answer preservation
 
-The recommendation must still be supported by the eventual reasoning.
+The non-negotiable constraint, and the one that creates the project's hardest structural problem.
 
-## 24. The Importance of Naturalness
+### 21.1 Why it is non-negotiable
 
-A central requirement of the ADHD idea is that the protected response should not look like corrupted data.
+Without it, ADHD is indistinguishable from returning wrong answers ([§4.6](#46-returning-wrong-answers)): effective against distillation, fatal to the product and to the provider's basic obligation to its users.
 
-If the text is visibly strange, an attacker can detect the defense, filter the response, request a new answer, or remove the suspicious segment before training.
+### 21.2 How it is enforced
 
-Naturalness therefore has to be treated as a security property, not merely a writing preference.
+| Domain | Mechanism |
+| - | - |
+| Mathematics | Extract the numerical answer from the clean response; append it programmatically to the transformed one; verify equality |
+| Non-mathematical | LLM extracts the core claim from both responses; LLM judges semantic equivalence *(currently fails open (see [§15](#15-stage-4-verification-and-fail-safe)))* |
 
-A natural protected response should:
+> **Recorded outcome.** ITRO's answer-preservation rate during defended-dataset generation was approximately **85-87 %**, implying that **13-15 % of the "defended" corpus was actually clean fallback**. This is correct fail-safe behavior, but it dilutes the intervention and complicates interpretation of the arm.
 
-1. Read like something a capable human or model might genuinely write.
-2. Avoid repeated catchphrases across many responses.
-3. Avoid fixed templates that expose the transformation boundary.
-4. Avoid abrupt logical jumps that reveal an inserted poison segment.
-5. Avoid obviously unnecessary nonsense.
-6. Maintain consistent tone and formatting.
-7. Vary where detours occur.
-8. Vary how corrections are phrased.
-9. Vary how many techniques are used.
-10. Preserve the user's requested style where possible.
+### 21.3 The problem it creates
 
-The target is not maximum weirdness. The target is minimum clean training value subject to a strict human-utility constraint.
+This is the most uncomfortable structural consequence in the design.
 
-## 25. Why Systematic Corruption Matters
+```text
+   What ADHD wants the student to learn (the corruption)  ──▶  deliberately VARIABLE
+   What ADHD must preserve (the answer)                   ──▶  perfectly CONSISTENT
+```
 
-Purely random noise may be easy for training to ignore.
+From the student's perspective, the question→answer mapping is the single most stable, lowest-entropy signal in the entire defended corpus, and the defense *guarantees* its stability. Meanwhile the corruption, which the defense wants absorbed, is the noisiest part.
 
-If one example takes an inefficient path, another uses a clean path, another includes irrelevant prose, and another is only slightly changed, the student may simply learn the dominant clean pattern.
+A small student under next-token training has every incentive to learn the reliable shortcut and treat the rest as noise. **The answer-preservation constraint actively works against the poisoning objective.**
 
-The deeper ADHD hypothesis is that the transformation should create **systematic learning pressure**.
+SPECTRE's `no_early_leak` check, which requires that the answer not appear in the first 60 % of the response, is a partial mitigation: it prevents the answer from serving as an early anchor. It does not resolve the underlying tension.
 
-The undesirable reasoning behavior needs to appear often enough and consistently enough that a student trained on the data has an incentive to internalize it.
+## 22. Correctness is necessary but not sufficient
 
-At the same time, the surface form should remain diverse enough that an attacker cannot trivially identify and remove it.
+The original design treated "correct final answer" as sufficient justification for aggressive transformation. The reasoning was that false positives would be cheap, because a wrongly-flagged user still gets the right answer.
 
-This creates one of the central design tensions in ADHD:
+**The SPECTRE experiment showed this is too weak a safety condition.**
 
-> The defensive pattern must be consistent enough to affect learning, but diverse enough to avoid becoming an obvious signature.
+Users request explanations because the *path* matters:
 
-Solving that tension is a major part of the project.
+- a student learning mathematics may adopt the wrong formula demonstrated in the false start,
+- an engineer may copy a fragile pattern from degraded code,
+- a researcher may reuse an incorrect causal argument even when the final sentence is right,
+- a professional may act on an intermediate claim before reaching the correction.
 
-## 26. Why Corrections Can Be Useful
+A response that is answer-correct but locally self-contradictory ([§15](#15-stage-4-verification-and-fail-safe), the Natalia case) has satisfied the letter of R1 and violated the spirit of R2.
 
-One family of transformations is particularly interesting: a response can make a plausible local mistake or choose an inferior route, then correct itself before the final answer.
+> **The revised safety condition:** human utility requires **semantic validity and readability of the intermediate explanation**, not only terminal-answer equality. Semantic incoherence must be a **hard rejection condition**, on par with a wrong answer.
 
-For a human reader, self-correction can appear reasonable. People make false starts when solving difficult problems.
+# Part V: The constraints
 
-For a student model, repeated exposure may create a more complicated training signal. The student sees both the undesirable behavior and the recovery behavior.
+## 23. The safety valve
 
-The ideal defensive design would make the harmful habit easy to imitate while making the exact recovery less reusable.
+If any critical verification fails, deliver the clean response.
 
-This is not guaranteed simply by inserting mistakes. The structure of the false start, the placement of the correction, the diversity of the pivot, and the relationship between the incorrect intermediate state and the final solution all matter.
+**Design rationale.** The failure modes are asymmetric. A failed transformation that falls back to clean costs the provider a small amount of marginal protection. A failed transformation that ships costs a user a broken response and the provider its credibility.
 
-The broader point is that ADHD should think in terms of **learnability**, not merely textual obfuscation.
+**Implementation.** Retry the transformation a bounded number of times; on continued failure, return `c` unchanged. The user never learns that anything was attempted.
 
-## 27. Obfuscation Is Not the Same as Poisoning
+**Design commitment.** The valve must be **cheap to trigger**. A system reluctant to fall back, because fallback is expensive or because it degrades a defense metric, will eventually ship bad responses. Fallback rate is a health metric, not a failure metric.
 
-A response can look complicated without actually being bad training data.
+## 24. The untouched base model
 
-For example, adding harmless algebraic identities, verbose explanations, or redundant context may make the answer longer, but a student model can still learn the correct underlying mapping.
+The parent model is never modified: not fine-tuned, not retrained, not adversarially conditioned.
 
-ADHD therefore distinguishes two goals:
+| Benefit | Explanation |
+| - | - |
+| **No capability risk** | Modifying a frontier model to resist distillation risks degrading it for everyone |
+| **Separable deployment** | The layer can be added, removed, or updated without touching the model |
+| **Independent iteration** | Transformations can be swapped and ablated at wrapper speed, not training speed |
+| **Clean fallback** | The clean response always exists, by construction |
+| **Auditability** | Clean and transformed responses can always be compared |
 
-### 27.1 Surface Obfuscation
+The cost is stated plainly in [§10](#10-formal-framework): the layer sees only completed text, forgoing every mechanism available to defenses that operate on logits or sampling. **This is the defining trade of the architecture.**
 
-Make the reasoning harder to read, longer, less direct, or less elegant.
+## 25. The honeypot property
 
-### 27.2 Learning Interference
+The "Honeypot Deception" in ADHD's name is a specific claim: the defended response should be **indistinguishable from an ordinary response**, so that an attacker collecting it does not know they have collected anything unusual.
 
-Change the repeated training signal in a way that encourages undesirable generalization in the student.
+### Why the property is load-bearing
 
-The second goal is more important.
+A honeypot that announces itself is not a honeypot. If defended responses are identifiable, the attacker filters them out and the defense's effective coverage drops to zero: not partially, but entirely, at the cost of one preprocessing pass.
 
-The project should not assume that every confusing response is pedagogically toxic. A transformation is valuable only if it has a plausible mechanism for altering what a student learns while preserving human utility.
+### Current status: not achieved
 
-## 28. Answer Preservation and Verification
+> **Recorded outcome.** SPECTRE's T7 output is identifiable by a fixed opening sentence, a structurally positioned wrong operation, a pivot from a small enumerable pool, and repeated primitive decomposition. The honeypot property is **violated** by the current implementation.
 
-Because the protected response is intentionally transformed, ADHD needs an independent verification layer.
+### What measuring it requires
 
-The verifier should treat the clean response as the reference and evaluate whether the protected candidate preserves the important outcome.
+The property is testable, and has not been tested. The evaluation:
 
-Depending on the domain, verification can include:
+1. build a mixed corpus of clean and defended responses,
+2. train detectors: lexical classifiers, structural heuristics, LLM classifiers,
+3. report detection accuracy or AUC,
+4. then apply the best detector as a **sanitizer**, retrain a student on the cleaned corpus, and measure how much of the degradation survives.
 
-1. Extracting and comparing the final numeric answer.
-2. Comparing symbolic expressions after normalization.
-3. Checking that code produces the same required behavior.
-4. Checking that a proof reaches the same theorem and does not rely on an invalid step.
-5. Checking that a factual statement has not changed.
-6. Checking that a procedure preserves required actions and safety constraints.
-7. Checking that an analytical recommendation has not silently reversed.
-8. Checking that the response has not leaked a contradictory answer earlier in the text.
+**If a simple sanitizer restores clean-distillation performance, the defense is fragile regardless of its unsanitized numbers.** This test belongs in the core evaluation.
 
-Verification should be conservative.
+## 26. Attacker adaptation
 
-When the system cannot establish that the protected candidate is safe and correct, it should return the clean response.
+The threat model assumes an adaptive adversary. Once a defense is discovered, the attacker responds. Anticipated counter-moves:
 
-The defense should fail open with respect to extraction protection and fail safe with respect to user correctness.
+| Attacker move | Defensive implication |
+| - | - |
+| Filter out responses matching a detected pattern | Requires transformation diversity ([§27](#27-defense-diversity)) |
+| Strip text before a recognizable pivot | Requires the poison not to be confined to a removable prefix |
+| Rewrite every response with a cheap model | Requires the effect to survive paraphrase |
+| Train only on question-answer pairs | Reduces the attack to the no-rationale ceiling, arguably a defensive win |
+| Distribute collection across accounts and interfaces | Defeats per-account risk assessment |
+| Query the same item repeatedly and take a majority vote | Requires transformation determinism to not be exploitable |
+| Cross-reference against an unprotected model | Identifies protected responses by disagreement |
 
-## 29. Correctness Is Necessary but Not Sufficient
+The last is worth noting: an attacker with access to *any* comparable model can detect anomalous reasoning by disagreement, without ever identifying the mechanism.
 
-A protected response can end with the correct answer and still be unacceptable.
+**Design consequence.** A defense evaluated only against a non-adaptive collector reports an upper bound on its effectiveness. Every number in `results.md` is such an upper bound.
 
-For example, the body may contain a contradiction, misuse a quantity, present an impossible causal statement, or make a correction that does not logically follow from the preceding text.
+## 27. Defense diversity
 
-A mature verifier therefore needs more than final-answer equality.
+A single transformation is a single point of failure. If the attacker learns to detect T7, the defense stops working.
 
-It should evaluate several dimensions:
+A deployed system should therefore maintain a **portfolio**:
 
-1. Final answer preservation.
-2. Internal semantic consistency.
-3. Human readability.
-4. Naturalness.
-5. Absence of unresolved false claims.
-6. Compliance with the user's requested format.
-7. Safety constraints.
-8. Whether the intended transformation is actually present.
-9. Whether the transformation is too obvious.
-10. Whether the response remains useful for the immediate task.
+- multiple transformation families with genuinely different signatures,
+- per-request selection that does not correlate with a detectable feature,
+- rotation over time,
+- new transformations added as old ones are compromised.
 
-This turns verification into a core component of the defense rather than an afterthought.
+The repository retains five independent transformations (backward derivation, wrong-operation-first, primitive decomposition, circular verification, formula-error correction) alongside the T7 composite, partly for ablation and partly as the seed of such a portfolio.
 
-## 30. The Safety Valve
+> [!NOTE]
+> The ensemble selection component **GHOST** (*Gradient-Hostile Output Selection for Training*) currently ranks candidate transformations by asking a language model which would be most harmful to a student. **It does not compute gradients or measure student loss.** It is a heuristic placeholder for a measured selection criterion, and should not be described as anything more.
 
-The safety valve is conceptually simple.
+## 28. Human utility as a hard constraint
 
-If the transformed candidate fails a critical check, ADHD returns the original clean response.
+The constraint that separates ADHD from ordinary data poisoning.
 
-This matters because the system is deliberately manipulating explanations. No transformation generator will be perfect. Some tasks will be difficult to rewrite safely. Some domains will have weak verification. Some responses will already be so concise that any corruption would be obvious.
+A defense that degrades the legitimate user's experience has not made a trade-off; it has failed. The provider's core obligation is to the user who pays for and correctly uses the service.
 
-In those cases, the correct behavior is not to force a protected answer.
+### Measuring it
 
-The correct behavior is to give the user the original answer and accept that this particular interaction was not protected.
+Human utility has been asserted throughout this design and **never measured**. The evaluation it requires:
 
-That design choice keeps the user's immediate task above the security objective.
+Blind human comparison of clean and defended responses, rated on clarity, coherence, unnecessary complexity, confidence calibration, ease of following the reasoning, whether intermediate claims mislead, reading time, whether the response appears deliberately manipulated, and overall usefulness.
 
-## 31. Why the Original Model Should Remain Untouched
+> The defense is not successful if the student gets worse **only because** the legitimate user's explanation also got much worse.
 
-One of the strongest architectural properties of ADHD is that the base model does not need to be retrained.
+Automated checks can reject obvious defects. They cannot substitute for this.
 
-The teacher can continue to operate exactly as evaluated and deployed.
+**This absence is a central limitation of the current evidence, not a minor reporting omission.** SPECTRE's 4.8 pp result is uninterpretable as a defense claim without a companion measurement of what it cost the user.
 
-ADHD sits outside it as middleware or a response-processing layer.
+## 29. High-stakes domains and ethics
 
-This separation has several advantages.
+Some domains should be excluded from transformation entirely, regardless of assessed risk or value.
 
-First, the defense can potentially be added to an existing deployment.
+### Categorical exclusions
 
-Second, it can be disabled without changing the model.
+| Domain | Reason |
+| - | - |
+| Medical, clinical, pharmacological | A user may act on an intermediate claim before reaching the correction |
+| Legal advice | Same, with legal consequences |
+| Safety-critical engineering | Procedures are followed literally |
+| Financial decisions with irreversible consequences | Same |
+| Emergency or crisis contexts | No tolerance for a wrong intermediate step |
+| Anything where an uncorrected intermediate claim could cause harm | The general rule |
 
-Third, the same defense architecture can be tested across multiple model providers.
+### The generalized principle
 
-Fourth, failures in the transformation layer do not require modifying the underlying model weights.
+The wrong-approach-first family of transformations ([§17](#17-per-domain-corruption-catalogs)) presents a **confidently stated false claim** before correcting it. That is acceptable in a grade-school arithmetic problem, where the reader can verify the arithmetic and the stakes are nil. It is not acceptable where the reader cannot verify the claim and may act on it.
 
-Fifth, legitimate traffic that does not trigger protection can receive the original model behavior unchanged.
+> **The rule: a transformation may only present a confident false intermediate where the reader can independently detect it is false, and where acting on it before reading the correction is harmless.**
 
-This is central to the deployability of the idea.
+This substantially narrows the deployable surface of the wrong-operation mechanism, arguably to verifiable technical domains only. That is a real cost of the mechanism, and it should be counted against it.
 
-## 32. The Role of the Suspicion Detector
+### The broader ethical position
 
-ADHD should not be confused with the system that decides who is an attacker.
+ADHD deliberately delivers responses whose reasoning is worse than what the model could produce. Three commitments constrain that:
 
-A real deployment may combine ADHD with separate signals such as abuse detection, account reputation, rate limiting, anomaly detection, or extraction-specific classifiers.
+1. **The final answer is always the model's genuine answer.** The user's task is completed correctly.
+2. **The transformation is applied only under assessed extraction risk**, never to ordinary traffic.
+3. **Uncertainty resolves toward the user.** Every ambiguous case gets the clean response.
 
-The detector can produce a probability or policy decision, and ADHD can determine how to respond.
+Whether those commitments are sufficient is a legitimate question, and it depends heavily on the accuracy of the risk gate, which, as [§12](#12-stage-1-risk-assessment) notes, remains unbuilt.
 
-Keeping these components separate has an important benefit. Improvements in abuse detection can be adopted without redesigning the transformation engine, and improvements in the transformation engine can be adopted without retraining the detector.
+# Part VI: Boundaries and evaluation
 
-The transformation layer should also be designed with detector errors in mind.
+## 30. What ADHD is not
 
-A false positive should ideally mean that a legitimate user receives a slightly less elegant explanation, not a wrong answer.
+Stated explicitly, because each confusion has appeared in discussion of the project.
 
-That low-cost false-positive objective is one of the main motivations for the entire approach.
+| ADHD is **not** | Clarification |
+| - | - |
+| **A jailbreak defense** | It addresses distillation, not misuse of the model's outputs |
+| **A watermarking scheme** | Watermarking establishes *attribution* after the fact; ADHD attempts to reduce *transfer* |
+| **A content filter** | It does not refuse, block, or restrict any query |
+| **An offensive tool** | Nothing is deployed against the attacker's systems; the only artifact is a response the attacker requested |
+| **Data poisoning of a public corpus** | It affects only responses served to a specific assessed-risk requester |
+| **A guarantee** | It is a cost-raising measure with an empirical, contested effect size |
+| **A replacement for other defenses** | It is one layer among several ([§33](#33-position-in-the-defense-stack)) |
+| **A method that touches model internals** | It operates purely on visible output text |
+| **Validated** | The current state is *promising but unvalidated*, one run per condition, no human evaluation, no adaptive attacker |
 
-## 33. The Honeypot Property
+## 31. What success would mean
 
-The word "honeypot" is important.
+A future ADHD result must clear all of the following. Meeting only the first is what the project has done so far.
 
-Traditional access control tries to deny the attacker the resource.
+| # | Criterion | Status |
+| :-: | - | :-: |
+| 1 | Student degradation vs. clean distillation | **Observed**: 4.8 pp, single run |
+| 2 | Degradation exceeding the no-rationale baseline by a margin that justifies the complexity | **Marginal**: 2.2 pp |
+| 3 | Reproducible across multiple training seeds with reported variance | **Not done** |
+| 4 | Mechanism confirmed by ablation, not just observed by score | **Not done** |
+| 5 | Length- and lexically-matched control that isolates poisoning from distribution shift | **Not done** |
+| 6 | Human utility measured and shown not to collapse | **Not done** |
+| 7 | Low detectability under trained detectors | **Not done: currently violated** |
+| 8 | Degradation survives attacker-side sanitization | **Not done** |
+| 9 | Effect demonstrated on reasoning the student cannot already do | **Not done: GSM8K is too easy** |
+| 10 | Bounded latency, token, and cost overhead | Partially, budgets enforced, economics unmeasured |
 
-A honeypot allows the attacker to interact with something that appears valuable while changing the economics of the attack.
+**Criterion 9 deserves emphasis.** The no-rationale result (37.0 %) shows that GSM8K performance depends only weakly on the teacher's reasoning trace. A defense that targets transferred reasoning is being measured on a benchmark where transferred reasoning barely matters. The move to harder mathematics (MATH-500, competition problems, proof-like reasoning) is **not optional**; it is required for the evaluation to be informative.
 
-In ADHD, the desirable attacker experience is:
+## 32. The economic frame
 
-1. Queries still receive responses.
-2. Responses still contain correct final answers.
-3. Explanations still look detailed enough to collect.
-4. The attacker does not receive a clear signal that the defense activated.
-5. The collected corpus is less useful than it appears.
-6. The attacker may only discover the weakness after spending resources on collection and training.
+The most defensible version of ADHD's value proposition is economic rather than absolute.
 
-The goal is not theatrical deception. It is economic deception.
+Distillation is attractive because it is cheap. A defense does not need to make it impossible; it needs to make it **expensive enough to change the calculation**.
 
-The defender wants to reduce the expected value of extraction while preserving the expected value of the API to legitimate users.
+Levers available to a response-layer defense:
 
-## 34. Attacker Adaptation
+| Lever | Attacker cost imposed |
+| - | - |
+| Longer responses | More tokens purchased, more storage, longer training sequences |
+| Required filtering | Engineering effort plus a filtering model's inference cost |
+| Reduced per-example value | More queries needed for the same student capability |
+| Required verification | The attacker must check what they collected |
+| Uncertainty about coverage | The attacker cannot know which responses were transformed |
 
-Any realistic defense must assume the attacker can adapt.
+**The metric that matters** is *attacker capability gained per dollar spent*, not defended-student accuracy in isolation.
 
-An attacker may attempt to:
+**The counter-metric that also matters** is provider cost: added latency, extra generated tokens, inference compute, and clean-fallback rate. A mechanism that doubles the attacker's cost and triples the provider's has not helped.
 
-1. Detect repeated corruption templates.
-2. Remove self-correction segments.
-3. Keep only final answers.
-4. Ask the same question several ways and compare responses.
-5. Use multiple source models.
-6. Use a stronger model to clean the collected data.
-7. Train on a mixture of clean and protected data.
-8. Identify suspicious stylistic markers.
-9. Search for examples where the protected answer is unusually long.
-10. Fine-tune the student again on a cleaner dataset after extraction.
+Neither has been measured. Both belong in the next evaluation.
 
-ADHD therefore cannot rely on a single static trick.
+## 33. Position in the defense stack
 
-The long-term design should be adaptive, domain-aware, diverse, and continuously evaluated against attacker-side cleaning strategies.
+ADHD is one layer, and not the first one.
 
-## 35. Defense Diversity
+```text
+   ┌──────────────────────────────────────────────┐
+   │ 1. Access control, KYC, payment verification │  ← raises account cost
+   ├──────────────────────────────────────────────┤
+   │ 2. Rate limiting and quota enforcement       │  ← raises volume cost
+   ├──────────────────────────────────────────────┤
+   │ 3. Behavioral detection and account action   │  ← raises operational cost
+   ├──────────────────────────────────────────────┤
+   │ 4. ADHD response transformation              │  ← raises per-response value cost
+   ├──────────────────────────────────────────────┤
+   │ 5. Watermarking and attribution              │  ← enables post-hoc action
+   ├──────────────────────────────────────────────┤
+   │ 6. Legal and contractual enforcement         │  ← raises consequence cost
+   └──────────────────────────────────────────────┘
+```
 
-A useful implementation can maintain a library of transformation families rather than one universal prompt.
+Layer 4 is where ADHD sits: **after** detection has produced a risk signal, **before** attribution becomes relevant. It is complementary to every other layer and a replacement for none.
 
-The system can vary:
+Notably, ADHD depends on layer 3. Without a functioning behavioral detector, the risk gate cannot fire correctly, and the choice becomes transforming everything (unacceptable) or nothing (no defense).
 
-1. Which transformation family is used.
-2. How many transformations are composed.
-3. Where the detour appears.
-4. Whether the response uses forward reasoning, backward verification, or a false start.
-5. How the correction is phrased.
-6. How much redundant material is inserted.
-7. How the reasoning is decomposed.
-8. Which domain-specific weakness is targeted.
-9. The length and style of the explanation.
-10. The degree of transformation based on risk and pedagogical value.
+## 34. Position in the literature
 
-Diversity should not be random for its own sake. It should preserve a meaningful learning-interference mechanism while avoiding a simple signature.
+Anti-distillation methods are best organized by **intervention point**, because two methods can share a security objective while imposing very different deployment requirements.
 
-## 36. Human Utility as a Hard Constraint
+| Family | Intervenes on | Modifies teacher? | Relation to ADHD |
+| - | - | :-: | - |
+| **Teacher-side training**: Nasty Teacher, CMIM, Teacher Scrambling, DOGe, distillation traps | Teacher weights, output head, calibration | **Yes** | Strongest control at the source; protection is coupled to a modified model |
+| **Serving-time decoding**: ADS, LADS, Product-of-Experts, CMI purification | Sampling randomness, next-token distributions, exposed logits | Usually not persistently | Finer control than text editing; requires access to generation internals |
+| **Post-generation transformation**: PART, SelfCAD, trace rewriting, TraceGuard, SGRE | A completed reasoning trace | **No** | **ADHD's family.** Preserves separability; must solve semantics, naturalness, detectability, sanitization |
+| **Information throttling**: CoT removal or summarization | Rationale withheld before delivery | **No** | Simple; a strong baseline on mathematics. Our no-rationale arm *is* this |
+| **Attribution / fingerprinting**: DRW, EWE, ReasMark, ADFP | Watermarks designed to survive transfer | Varies | Addresses attribution rather than prevention; complementary |
 
-The most important product constraint is that ADHD is not allowed to win by making the model bad for humans.
+### Three external findings that constrain this design
 
-A response that successfully harms a student but frustrates every legitimate reader is not a successful defense.
+**1. Information throttling is a strong mathematical baseline.** Evaluation surveys covering output perturbation, data poisoning, and information throttling report strong task dependence, with chain-of-thought removal notably strong on mathematics. Our own no-rationale arm reproduces this independently at 37.0 %. **Complex mechanisms must be compared against simple withholding, not only against clean distillation.**
 
-Human utility should therefore be evaluated explicitly.
+**2. Effectiveness is inseparable from the attacker model.** Formalizations of query budget, data budget, and interface profile show that apparent effectiveness shifts materially under different assumptions, and minimax analyses find that adaptive students recover substantially more capability than passive evaluation suggests. Our experiments evaluate a naive collector and therefore report an upper bound.
 
-A protected response should be judged on questions such as:
+**3. Degrading content is not the only option.** Locally-adaptive decoding schemes preserve the marginal distribution a benign user sees while correlating randomness across semantically related repeated queries, reducing the diversity available to a multi-account collector **without degrading any single response**. This is a direct counterexample to the assumption that anti-distillation must trade response quality for protection strength, and it should be a baseline in any evaluation of a deception layer.
 
-1. Is the final answer correct?
-2. Can a human follow the explanation?
-3. Does the response answer what was actually asked?
-4. Is the length reasonable?
-5. Are the intermediate statements internally coherent?
-6. Does the response preserve important caveats?
-7. Does it avoid unnecessary confusion?
-8. Does it still satisfy formatting requirements?
-9. Would a normal user consider it a plausible answer from the service?
-10. Is any defensive artifact obvious enough to reduce trust?
+### The narrow novelty claim
 
-The goal is a narrow region where the response remains good enough for the current human task but becomes a worse demonstration for future model training.
+Recent "answer-then-edit" work obtains a clean solution and then edits a reasoning skeleton to raise student learning difficulty while explicitly evaluating trace naturalness. That is a close architectural neighbor.
 
-## 37. High-Risk Domains Need Stronger Guardrails
+> **ADHD's contribution is not the first proposal to edit a clean trace after generation.** It is an empirical case study of the trade-offs that emerge when such a layer must simultaneously preserve human utility, verify its own output, and reduce student-training value, and a demonstration that structural verification is insufficient for the first of those.
 
-Not every domain should permit the same kind of manipulation.
+### The experiment that would settle the architecture question
 
-In areas where an inefficient or confusing explanation can cause real harm, the allowed transformation space should be much smaller.
+On an open teacher where all families are implementable, train students from: clean traces, no-rationale outputs, teacher-side methods, serving-time methods, and post-generation methods, all with the same prompts, the same students, and the same evaluation.
 
-Examples include medical guidance, legal guidance, financial decisions, physical safety procedures, cybersecurity operations, and other high-stakes tasks.
+That would quantify **the price of deployment separability**: how much protection is forfeited by refusing to modify weights or decoding internals, and whether easier deployment and selective activation compensate.
 
-In such domains, the system may choose minimal transformation or simply return the clean response.
+# Part VII: Synthesis
 
-The principle is straightforward:
+## 35. The central research question
 
-> Extraction defense is secondary to user safety.
+> **Can a response be transformed so that a human retains full practical utility while a student model trained on many such responses learns systematically worse reasoning, and can that hold against an attacker who knows the defense exists?**
 
-ADHD should never intentionally make a safety-critical procedure harder to follow merely to reduce its training value.
+The question decomposes into four sub-questions, in increasing order of difficulty:
 
-## 38. What ADHD Is Not
+| # | Sub-question | Status |
+| :-: | - | - |
+| 1 | Can transformation reduce student performance at all? | **Yes**, 4.8 pp, single run |
+| 2 | Can it beat simple rationale withholding by a worthwhile margin? | **Marginally**: 2.2 pp |
+| 3 | Can it do so while preserving human utility? | **Unknown, and SPECTRE suggests not, in its current form** |
+| 4 | Can it survive an attacker who detects and sanitizes it? | **Untested** |
 
-ADHD is easier to understand when several non-goals are explicit.
+Progress on (1) is real. The project's remaining work is almost entirely (2) through (4).
 
-### 38.1 It Is Not a Watermark
+## 36. The fundamental design tension
 
-A watermark tries to make generated content identifiable later.
+The two experiments discovered opposite faces of a single trade-off.
 
-ADHD tries to change the training value of the content itself.
+```text
+        stealthy  ◀───────────────────────────────────▶  learnable
+             │                                                │
+          ITRO                                            SPECTRE
+     variable corruption                          consistent structural poison
+     −0.6 pp, subtle                              −4.8 pp, conspicuous
+     student learns around it                     attacker can fingerprint it
+             │                                                │
+             └──────────────── open region ───────────────────┘
+                   consistent in the latent features a
+                   student learns from; variable in the
+                   surface features a human or attacker sees
+```
 
-The two ideas can coexist, but they solve different problems.
+Stated precisely:
 
-### 38.2 It Is Not Rate Limiting
+> **A pattern must be consistent to be learnable by a student. A pattern that is consistent is detectable by an attacker. Learnability and detectability rise together.**
 
-Rate limiting reduces how quickly an attacker can collect data.
+This is not an implementation defect. It is a structural property of the problem, and it is the reason the middle region may or may not exist.
 
-ADHD changes what suspicious collection receives.
+The open question is whether "the features a small student learns from" and "the features a detector or a human notices" are separable feature sets. If they are, a transformation can be consistent in the first and varied in the second. If they are not, post-generation transformation may be fundamentally limited, and the honest conclusion would be that this family of defenses cannot simultaneously satisfy R2 and R7.
 
-Both can be part of the same defense stack.
+**Neither implementation has tested this.** Doing so requires the detectability and sanitization evaluations described in [§25](#25-the-honeypot-property), which have not been run.
 
-### 38.3 It Is Not Access Control
+## 37. Design principles
 
-Authentication and authorization decide whether someone is allowed to use the service.
+The twelve principles the implementations were built against, revised in light of what the experiments showed.
 
-ADHD assumes the user already has enough access to receive a response.
+| # | Principle | Status |
+| :-: | - | - |
+| **1** | **The answer is sacred.** The user always receives the parent model's terminal answer. | Held |
+| **2** | **The parent model is untouched.** All protection lives in an external, removable layer. | Held |
+| **3** | **Fail safe, always.** Any verification failure delivers the clean response. | Held for math; **fail-open gap** in ITRO's non-math path |
+| **4** | **Uncertainty favors the user.** Ambiguous risk assessment means no transformation. | Held |
+| **5** | **Protection is graded, not binary.** Intensity scales with assessed risk and value. | Held |
+| **6** | **Risk and value are separate signals.** Never collapse them into one score. | Held |
+| **7** | **Naturalness is a security property, not a nicety.** Detectable means removable. | **Violated by T7** |
+| **8** | **Verify presence, not just success.** A silently-clean corpus is a wasted experiment. | Held, and directly motivated by a real ITRO defect |
+| **9** | **Correctness of the answer is not sufficient.** The explanation must also be semantically valid. | **Violated: the Natalia case** |
+| **10** | **Measure capability, not loss.** Training difficulty is not security. | Held, and the central ITRO lesson |
+| **11** | **Compare against the trivial baseline.** No-rationale is the bar, not clean distillation. | Held |
+| **12** | **Assume the attacker adapts.** An unsanitized evaluation reports an upper bound. | Acknowledged, **untested** |
 
-### 38.4 It Is Not Deliberately Wrong Answering
+Principles 7 and 9 are the two the project has demonstrably broken. They are the design agenda for the next phase.
 
-The design objective is to preserve the correct conclusion.
+## 38. What the experiments changed about this design
 
-### 38.5 It Is Not Random Noise Injection
+This section exists because a design document that never updates against evidence is not a design document.
 
-Random words, arbitrary mistakes, and visibly corrupted text are easy to detect and often destroy human utility.
+| Original belief | Revised belief | Evidence |
+| - | - | - |
+| Making reasoning convoluted will degrade student learning | Surface obfuscation raises fitting cost without meaningfully reducing capability | ITRO: +56 % loss, −0.6 pp accuracy |
+| Higher training loss indicates a working defense | Loss measures distribution difficulty, not knowledge transfer | ITRO loss and accuracy diverged completely |
+| Variable corruption is better (harder to detect) | Variable corruption lets the student learn around it; consistency is what works | ITRO 0.6 pp vs. SPECTRE 4.8 pp |
+| Clean distillation is the baseline to beat | **No-rationale** is the baseline to beat | 37.0 % achieved with zero mechanism |
+| A correct final answer makes false positives cheap | Semantic incoherence harms users even with a correct answer | The Natalia case |
+| Structural verification is sufficient | Structural checks pass responses that are locally self-contradictory | All six flags passed on a contradictory response |
+| Answer preservation is purely a product constraint | It is also a *security* obstacle, it guarantees the student a perfectly stable signal | [§21.3](#213-the-problem-it-creates) |
+| Breadth across eight domains is the right scope | Prove a mechanism in one verifiable domain first, then generalize | ITRO's eight-domain design obscured the mechanism failure |
+| GSM8K is an adequate benchmark | It is too easy; the teacher's reasoning barely matters to it | No-rationale costs only 2.6 pp |
 
-ADHD aims for structured, plausible, domain-aware degradation.
+## 39. Long-term vision
 
-### 38.6 It Is Not Base-Model Retraining
+The end state this design points toward is not a fixed transformation. It is a **response-layer controller**: a component that continuously decides, per request, how much of the model's reasoning to expose.
 
-The model can remain unchanged. The defense operates after generation.
+Its inputs:
 
-### 38.7 It Is Not a Complete Solution to Model Extraction
+| Input | Question answered |
+| - | - |
+| **A. Request risk** | Is this plausibly systematic extraction? |
+| **B. Response value** | How much would this teach a student? |
+| **C. Human utility cost** | What would transformation cost this specific user? |
+| **D. Detectability budget** | How much defensive signature can the portfolio afford to emit? |
 
-An attacker can use many strategies, including stealing weights, exploiting infrastructure, training on public data, using several teachers, or cleaning collected outputs.
+Its output is a graded decision across a spectrum (clean, lightly transformed, heavily transformed, throttled) chosen to maximize the gap between human utility and distillation utility, subject to a hard floor on the former.
 
-ADHD is one layer in a larger model-protection strategy.
+Reaching that requires solving problems this project has surfaced but not solved:
 
-## 39. What Success Should Mean Conceptually
+1. a behavioral risk detector accurate enough to gate on ([§12](#12-stage-1-risk-assessment)),
+2. a value estimator grounded in measured learning gain rather than heuristic τ ([§9](#9-graded-response-and-adaptive-intensity)),
+3. a transformation that is latently consistent and superficially varied ([§36](#36-the-fundamental-design-tension)),
+4. semantic verification strong enough to make R2 enforceable ([§22](#22-correctness-is-necessary-but-not-sufficient)),
+5. demonstrated robustness against sanitization ([§26](#26-attacker-adaptation)),
+6. an economic model showing the attacker's cost rises faster than the provider's ([§32](#32-the-economic-frame)).
 
-Without referring to any particular experiment, the project should define success across several independent axes.
+**Current honest status: promising but unvalidated.**
 
-### 39.1 Answer Preservation
+The project has established that post-generation transformation can move student accuracy, identified precisely why the first approach failed, produced a mechanism with a materially larger effect, and, most usefully, demonstrated concretely where that mechanism breaks. The case study **sharpens rather than closes** the research question. It does not rule out post-generation defenses; it narrows the target to transformations that preserve natural, conceptually correct human utility, produce reproducible degradation beyond simple withholding, and survive adaptive sanitization.
 
-Protected responses reach the same correct final answer as clean responses.
+## Related documents
 
-### 39.2 Human Readability
+| Document | Contents |
+| - | - |
+| [`results.md`](results.md) | Complete experimental record, training diagnostics, failure analysis, code audit, next-experiment design |
+| [`Readme.md`](Readme.md) | Repository overview, headline results, architecture, installation, usage |
+| `ITRO/` | Phase I implementation: eight-domain adaptive obfuscation |
+| `SPECTRE/` | Phase II implementation: mathematical structural poisoning |
 
-People can follow the protected explanation without obvious confusion.
+## Acknowledgments
 
-### 39.3 Human Task Utility
-
-People can still use the response to solve the task they asked about.
-
-### 39.4 Distillation Resistance
-
-A student trained on protected outputs should learn less useful transferable capability than a comparable student trained on clean outputs.
-
-### 39.5 Stealth
-
-Protected responses should not be trivially distinguishable from ordinary responses through simple style or template cues.
-
-### 39.6 Robustness to Cleaning
-
-The defensive effect should not disappear after trivial preprocessing such as removing a fixed phrase or trimming a known section.
-
-### 39.7 Coverage
-
-The system should know which domains it can protect well and where it should fall back.
-
-### 39.8 Cost
-
-The extra inference, verification, and latency should be practical enough for the intended deployment.
-
-### 39.9 Adaptability
-
-The defense should be able to evolve when attackers learn the current transformation patterns.
-
-These dimensions should be measured separately. A defense that excels at one and fails badly at another should not be summarized by a single number.
-
-## 40. Why Harder Questions Matter
-
-The ADHD concept is most relevant when a response contains a meaningful reasoning process to protect.
-
-Very easy questions may be answerable by a student from pretraining alone. In those cases, changing the teacher's explanation may have limited influence because the student already possesses much of the required capability.
-
-More difficult questions can expose richer strategy, decomposition, abstraction, and recovery behavior.
-
-This suggests that the natural long-term target for ADHD is not only simple benchmark questions. The more important setting is high-value reasoning where the source model demonstrates capabilities that a weaker student does not already have.
-
-Examples include advanced mathematics, difficult proofs, nontrivial algorithm design, complex debugging, scientific inference, multi-constraint planning, and deeper analytical tasks.
-
-This is not an evaluation claim. It is part of the conceptual threat model. An extractor interested in frontier capability will eventually target the tasks where the frontier model's reasoning is most valuable.
-
-## 41. Why the Final Answer Alone Is Not Enough for the Attacker
-
-An attacker can always choose to discard the explanation and train only on final answers.
-
-ADHD does not claim to prevent that.
-
-However, answer-only supervision gives up much of the structured information that makes detailed teacher outputs attractive in the first place.
-
-This creates an intended tradeoff for the attacker.
-
-If the attacker keeps the full rationale, the dataset may contain defensive structure.
-
-If the attacker strips the rationale, the attacker receives a weaker supervision signal.
-
-If the attacker uses another strong model to reconstruct clean rationales, the attacker introduces additional cost and another dependency.
-
-The defense therefore aims to change the economics rather than create an impossible barrier.
-
-## 42. Why This Is an Economic Defense
-
-The ultimate goal is not to prove that extraction can never succeed.
-
-A sufficiently capable and well-funded attacker may eventually work around many defenses.
-
-The practical objective is to increase one or more of the following:
-
-1. Number of queries required.
-2. Amount of data cleaning required.
-3. Compute required for student training.
-4. Number of failed training attempts.
-5. Need for additional teacher models.
-6. Need for manual auditing.
-7. Difficulty of identifying high-quality examples.
-8. Difficulty of knowing whether a collected corpus is trustworthy.
-9. Time required to reproduce the target capability.
-10. Uncertainty in the final student quality.
-11. Output-token expenditure required to collect each protected training example.
-12. Total student-training tokens consumed by unnecessarily long or inefficient rationales.
-
-There is also a customer-retention dimension. Conventional enforcement can turn an uncertain detection into a lost customer. ADHD creates the possibility of continuing to serve that account safely enough to preserve the relationship while the provider gathers more evidence. For a genuine user, this reduces the cost of a false positive. For an actual extractor, it keeps the attacker paying for an increasingly uneconomical data-collection process.
-
-If extracting the capability becomes substantially less reliable and more expensive, the defense has changed the economics of the attack.
-
-That is a realistic security objective.
-
-## 43. Integration with a Broader Defense Stack
-
-ADHD is strongest as one layer in a larger system.
-
-A complete deployment could combine:
-
-1. Authentication and account controls.
-2. Rate limiting.
-3. Behavioral anomaly detection.
-4. Extraction-specific traffic analysis.
-5. Prompt similarity and benchmark-pattern detection.
-6. Response watermarking or provenance systems.
-7. Usage policies and contractual controls.
-8. Monitoring for suspicious fine-tuned models.
-9. Adaptive response protection through ADHD.
-10. Incident response and attacker model updates.
-
-The layers solve different problems.
-
-Rate limits make collection slower. Detection estimates intent. Watermarking may help attribution. ADHD changes the training value of suspicious responses.
-
-A layered design is more realistic than expecting any one technique to stop model extraction completely.
-
-## 44. A More Complete ADHD Controller
-
-At a high level, a production-oriented controller could make a decision using four inputs.
-
-### Input A: Request Risk
-
-How likely is this request, account, or session to be involved in extraction?
-
-### Input B: Pedagogical Value
-
-How useful would the clean response be as a training example?
-
-### Input C: Domain Safety
-
-How much transformation can this domain safely tolerate?
-
-### Input D: Transformation Confidence
-
-How confident is the system that it can preserve correctness and naturalness for this response?
-
-The controller can then select among actions such as:
-
-1. Return the clean response.
-2. Apply minimal protection.
-3. Apply moderate domain-specific protection.
-4. Apply stronger protection with stricter verification.
-5. Refuse transformation because the domain is high risk.
-6. Fall back after verification failure.
-7. Escalate to rate limiting, suspension, or termination when the broader security system reaches sufficiently high confidence.
-
-This makes the defense conditional and context-sensitive rather than universal. It also lets the provider treat suspicion as a spectrum instead of forcing every account immediately into either unrestricted access or a ban.
-
-## 45. The Long-Term Vision
-
-The long-term version of ADHD is not a single obfuscation prompt.
-
-It is an adaptive security layer that understands both **what a user is asking** and **what a student model could learn from the answer**.
-
-A mature system would have:
-
-1. A continually updated library of domain-specific transformations.
-2. A pedagogical-value model that estimates how valuable an answer is for distillation.
-3. A separate suspicion system for extraction behavior.
-4. Strong semantic verification.
-5. Human-readability evaluation.
-6. Stealth evaluation.
-7. Automated testing against student-model training.
-8. Red-team pipelines that attempt to clean the protected data.
-9. Diversity mechanisms that prevent one static defensive signature.
-10. Safety policies that limit or disable transformation in sensitive domains.
-11. Continuous adaptation as extraction strategies evolve.
-
-The ideal endpoint is a service where ordinary users interact with the underlying model normally, while suspicious high-value extraction traffic is quietly routed through a response layer that reduces the value of the resulting training corpus.
-
-## 46. The Central Research Question
-
-The entire project can be reduced to one research question:
-
-> Can we create outputs that remain correct and genuinely useful to humans, but are systematically worse supervision for a model trying to learn the underlying capability?
-
-Everything else in ADHD follows from that question.
-
-Domain detection exists because different reasoning types need different corruption mechanisms.
-
-Adaptive intensity exists because not every response has the same training value.
-
-The correctness checker exists because the user must remain protected from the defense itself.
-
-The safety valve exists because preserving user utility is more important than protecting every individual response.
-
-Diversity exists because an obvious honeypot is easy to avoid.
-
-Stealth exists because the attacker should not know exactly which examples are protected.
-
-The post-processing architecture exists because the base model should remain unchanged.
-
-The entire system is therefore organized around a narrow but difficult objective: **separate the value of an answer to the person who needs it now from the value of that same answer to a model that will be trained on it later.**
-
-## 47. The Fundamental Design Tension
-
-ADHD is difficult precisely because the two audiences are not completely separable.
-
-Humans and models both benefit from good explanations.
-
-If the explanation is degraded too little, it remains useful training data.
-
-If it is degraded too much, the human notices or loses value.
-
-If the corruption is too random, the student may ignore it.
-
-If the corruption is too consistent, the attacker may detect it.
-
-If the system protects everything, legitimate users pay the cost.
-
-If the system protects too little, an extractor receives clean data.
-
-If verification is weak, user correctness is at risk.
-
-If verification is too expensive, deployment becomes impractical.
-
-These tensions are not side issues. They are the core engineering and research problems of ADHD.
-
-A successful design has to operate inside the narrow region where all of these constraints are simultaneously acceptable.
-
-## 48. Design Principles
-
-The project can be summarized through a set of design principles.
-
-### Principle 1: Correctness Before Defense
-
-Never intentionally sacrifice the user's final answer for the sake of poisoning an extraction dataset.
-
-### Principle 2: Preserve the Base Model
-
-Keep the protection outside the model whenever possible.
-
-### Principle 3: Target Training Value, Not Surface Appearance
-
-A complicated response is not automatically a bad training example. The transformation should have a plausible learning mechanism.
-
-### Principle 4: Be Domain Aware
-
-Different forms of reasoning require different transformations and different verification.
-
-### Principle 5: Be Adaptive
-
-Protect high-value suspicious interactions more strongly than low-value interactions.
-
-### Principle 6: Keep False Positives Cheap
-
-A legitimate user who is flagged should still receive a correct and useful answer.
-
-### Principle 7: Fail Safe
-
-When correctness or quality cannot be verified, return the clean response.
-
-### Principle 8: Avoid Static Signatures
-
-A honeypot that can be recognized automatically loses much of its value.
-
-### Principle 9: Evaluate Human Utility Separately
-
-Student degradation cannot justify an unreadable user experience.
-
-### Principle 10: Assume the Attacker Adapts
-
-Every transformation should eventually be tested against filtering, cleaning, paraphrasing, answer extraction, and mixed-data training.
-
-### Principle 11: Prefer Graded Enforcement When Confidence Is Uncertain
-
-Do not force every suspicious account into a binary choice between fully clean service and immediate termination. Use protected responses as a middle state when the detector has meaningful suspicion but not enough confidence to justify losing a legitimate customer.
-
-### Principle 12: Make Extraction Economically Inefficient
-
-When it can be done without materially harming legitimate users, use the protection layer to increase the attacker's cost per useful training example through lower pedagogical value, additional collection requirements, and additional training tokens.
-
-## 49. Final Vision
-
-ADHD is an attempt to make model extraction less attractive without turning the protected model into a worse product for legitimate users.
-
-It accepts that a useful model must answer questions. It accepts that some of those answers can be collected. It accepts that abuse detection will never be perfect.
-
-Instead of trying to eliminate those realities, it asks how the defender can change what happens after suspicious access has already occurred.
-
-The ideal protected interaction is deceptively ordinary.
-
-The user asks a question.
-
-The base model solves it correctly.
-
-The defense recognizes that the interaction may be valuable for extraction.
-
-The exposed rationale is transformed into a version that remains understandable and reaches the same answer, but demonstrates poorer reasoning habits than the clean solution.
-
-The transformed response is verified.
-
-If verification succeeds, it is delivered.
-
-If verification fails, the clean response is delivered.
-
-A legitimate user still gets the answer they need.
-
-An extractor still gets data, but the data is less valuable as a curriculum than it appears.
-
-That is the idea behind Adaptive Defense via Honeypot Deception.
+Thanks to **Yash Savani** (Carnegie Mellon University) for early discussion of the ADHD-ITRO concept, particularly the advice to *fail fast*, and the observation that students can extract usable signal from imperfect supervision, which anticipated the ITRO result. Computational resources were provided by **ASU Research Computing** and the **Sol supercomputer**.

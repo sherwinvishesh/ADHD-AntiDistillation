@@ -1,349 +1,394 @@
-# ADHD: Adaptive Defense via Honeypot Deception
+<h1 align="center">ADHD: Adaptive Defense via Honeypot Deception</h1>
 
-### A Post-Generation Defense Against Unauthorized LLM Distillation
+<p align="center">
+  <strong>Post-Generation Response Transformation Against Unauthorized Model Distillation</strong><br>
+  An empirical case study of a deployment-separable anti-distillation response layer
+</p>
 
-**ADHD** is a research framework for exploring whether the training value of LLM API responses can be reduced **without modifying the protected model itself**.
+<p align="center">
+  <a href="#paper"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%20preprint-b31b1b"></a>
+  <a href="#reproducibility-and-provenance"><img alt="Status" src="https://img.shields.io/badge/status-research%20prototype-orange"></a>
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
+  <img alt="Benchmark" src="https://img.shields.io/badge/benchmark-GSM8K%20(500%20held--out)-4c1">
+</p>
 
-The system introduces a deployment-separable response layer: the protected teacher generates its normal response first, and an external controller can then transform the visible explanation before it is returned. The goal is to preserve useful answers for legitimate users while making large-scale collection less valuable for unauthorized model distillation.
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#headline-results">Results</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#phase-i--itro">ITRO</a> •
+  <a href="#phase-ii--spectre">SPECTRE</a> •
+  <a href="#installation-and-usage">Usage</a> •
+  <a href="#limitations">Limitations</a> •
+  <a href="#citation">Citation</a>
+</p>
 
-This repository contains two generations of the idea:
+## Overview
 
-* **ITRO** — Inference-Time Reasoning Obfuscation
-* **SPECTRE** — Structural Poisoning via Empirical Corruption of Training Representations
+**ADHD** is a research framework for studying whether the *training value* of LLM API responses can be reduced **without modifying the protected model itself**.
 
-> **Research status:** ADHD is an experimental research project, not a production-ready security mechanism. The current results identify both promising signals and important limitations, particularly around human utility, semantic verification, and adaptive attackers.
+The system implements a **deployment-separable response layer**: the protected teacher generates its ordinary response first, and an external, risk-gated controller may then transform only the visible explanation before delivery. The intended asymmetry is easy to state and hard to realize: a legitimate human should retain the task result and a coherent explanation, while a student trained on thousands of transformed responses should receive lower-value supervision.
 
+This repository contains the two empirical phases of that investigation:
 
+| Phase | System | Expansion | Scope |
+| :-: | - | - | - |
+| I | **ITRO** | Inference-Time Reasoning Obfuscation | 8 reasoning domains, adaptive intensity |
+| II | **SPECTRE** | Structural Poisoning via Empirical Corruption of Training Representations | Mathematical reasoning, repeated structural poison |
+
+> [!IMPORTANT]
+> **Research status.** ADHD is an experimental research prototype and empirical case study, **not** a production-ready security mechanism. The recorded benchmark gaps are descriptive results from single historical runs, not causally isolated effect sizes. See [Limitations](#limitations) and [Responsible use](#responsible-use).
 
 ## Motivation
 
-Language-model APIs expose more than final answers. Detailed explanations and reasoning traces can provide useful supervision for training smaller models.
+Language-model APIs expose more than final answers. Detailed explanations and reasoning traces provide reusable supervision for training smaller models. A black-box extractor can query a stronger model at scale, collect prompt-response pairs, and fine-tune a student on the result, without ever touching teacher logits, hidden states, or weights.
 
-A black-box extractor can:
+The threat is operational rather than hypothetical. In February 2026, Anthropic reported three coordinated campaigns that generated more than **16 million exchanges** through approximately **24,000 fraudulent accounts**, including one campaign exceeding **13 million exchanges**. Current OpenAI and Gemini API terms also restrict competing-model development and model extraction.
 
-1. Query a stronger model at scale.
-2. Collect prompt-response pairs.
-3. Use the collected responses as supervised fine-tuning data.
-4. Train a smaller student to reproduce some of the teacher's behavior.
+Conventional responses (detection, rate limiting, account suspension, contractual enforcement, watermarking) remain essential. But a difficult policy region sits between ordinary use and a confirmed attack:
 
-Most defenses focus on detecting extraction, restricting access, modifying the teacher, or changing generation-time behavior.
+- If the provider is **highly confident** a session is conducting prohibited extraction, terminating or throttling access is reasonable.
+- If confidence is **uncertain**, an immediate ban can remove a legitimate customer.
 
-ADHD investigates a different intervention point:
+ADHD studies a third response for that uncertain middle region.
+
+## Headline results
+
+All numbers below are the **finalized recorded values** from the historical controlled-distillation experiment. Teacher reference: `Qwen2.5-7B-Instruct`. Final student: `Qwen2.5-0.5B-Instruct`. 2,000 training examples per arm; 500 held-out GSM8K questions; deterministic greedy decoding.
+
+### Held-out GSM8K accuracy
+
+| Condition | Correct | Accuracy | Gap vs. clean |
+| - | -: | -: | -: |
+| Teacher reference (7B) | 425 / 500 | **85.0 %** | n/a |
+| Student-Baseline (clean distillation) | 198 / 500 | **39.6 %** | n/a |
+| Student-ITRO | 195 / 500 | **39.0 %** | **−0.6 pp** |
+| Student-SPECTRE | 174 / 500 | **34.8 %** | **−4.8 pp** |
+| Student-NoCoT (no-rationale control) | 185 / 500 | **37.0 %** | **−2.6 pp** |
+
+SPECTRE produced **24 fewer correct answers** than clean distillation on the recorded evaluation set, and sits **2.2 pp** below the no-rationale control.
+
+### Recorded training diagnostics
+
+| Condition | Average loss | vs. clean | Final grad. norm |
+| - | -: | -: | -: |
+| Clean | **0.1637** | n/a | 0.1846 |
+| ITRO | **0.2555** | ≈ +56 % | 0.1919 |
+| SPECTRE | **0.3512** | ≈ +115 % | 0.2439 |
+
+All three recorded learning-rate schedules terminate at `2.923e-07`.
+
+### The central finding
+
+The two phases separate cleanly into one lesson each:
+
+> **ITRO:** a defended corpus can be *substantially harder to fit* (≈ 56 % higher average loss) while held-out student capability is *almost unchanged* (0.6 pp). **Optimization difficulty is not a security endpoint.**
+
+> **SPECTRE:** a repeated structural poison produces a *larger separation* (4.8 pp) but simultaneously makes the output *less readable and more fingerprintable*. **Learnability by the student and detectability by the attacker can rise together.**
+
+And the baseline that raises the bar for every complex mechanism:
+
+> **No-rationale withholding alone** costs 2.6 pp. SPECTRE beats it by only 2.2 pp, while adding semantic risk, inference overhead, and a sanitization surface.
+
+## Architecture
+
+The protected model's weights are never modified. The defense is a wrapper that can be added to an existing serving stack, revised independently, gated by domain, and coupled to any external risk score.
 
 ```text
-Incoming Query
-      |
-      v
-Protected Teacher
-(normal generation)
-      |
-      v
-Clean Response
-      |
-      v
-External Response Layer
-      |
-      +------ Low risk ------> Clean Response
-      |
-      +------ Intervention --> Transform Explanation
-                                   |
-                                   v
-                               Verification
-                              /            \
-                           Pass            Fail
-                            |                |
-                            v                v
-                       Transformed        Clean
-                        Response          Fallback
+                        ┌──────────────────────┐
+   Incoming query  ───▶  │ External extraction- │
+   or session            │    risk detector     │
+                        └───────┬──────────────┘
+                                │
+          ┌─────────────────────┼──────────────────────┐
+          │ low                 │ uncertain            │ high
+          ▼                     ▼                      ▼
+   Serve ordinary       Response-layer          Rate-limit,
+     response            intervention          suspend, block
+
+   ┌────────────────┐   ┌──────────────┐   ┌──────────────────┐
+   │ Protected      │   │ Conditional  │   │ Preservation and │
+   │ model T        ├──▶│ reasoning    ├──▶│ human-utility    │
+   │ generates c    │ c │ transformer R│ c̃ │ verifier V       │
+   └────────────────┘   │ ITRO/SPECTRE │   └────────┬─────────┘
+                        └──────────────┘            │
+                                         ┌──────────┴──────────┐
+                                    Pass │                     │ Fail
+                                         ▼                     ▼
+                                  Deliver c̃            Deliver clean c
 ```
 
-The protected model's weights do not need to be changed.
+Formally, for a query `q` the protected teacher produces a clean response `c = T(q)`. The transformer `R` receives the query, the clean response, the domain, and an intervention intensity, producing a candidate `c̃`. A verifier `V` then either accepts `c̃` or triggers fallback:
 
-This makes the defense independently deployable, replaceable, and selectively activatable.
+```
+      ⎧ c̃ ,  if V(q, c, c̃) = 1
+  y = ⎨
+      ⎩ c  ,  otherwise
+```
 
+This separation means the base model remains untouched while the intervention policy evolves independently.
 
+### Two signals the controller must keep separate
 
-## Core Research Question
+| Signal | Question it answers |
+| - | - |
+| **Request risk** | Does this session resemble extraction behavior? |
+| **Pedagogical value** | How useful would this specific answer be as training data if collected? |
 
-ADHD studies whether there exists a useful asymmetry between:
+A simple factual lookup may be suspicious at the account level yet carry little marginal training value. A difficult derivation may be highly valuable even when the request looks ordinary. Conflating the two signals wastes transformation budget on low-value content.
 
-> **information that remains useful to a human reader**
+## Design requirements
 
-and
+A deployable response-layer defense must satisfy these properties **simultaneously**. They are listed separately because the experiments show that satisfying one can hide failure in another.
 
-> **statistical supervision that is useful to a distilling student model.**
+| Requirement | Intended property | Why it must be measured independently |
+| - | - | - |
+| **Answer preservation** | Preserve the parent model's terminal answer or conclusion after transformation. | The service should not intentionally replace a correct answer merely because traffic looks suspicious. Preservation of the parent answer is *not* the same as objective correctness. |
+| **Human utility** | Keep the explanation understandable, semantically coherent, and useful for legitimate work. | A correct last line can coexist with a misleading derivation. Users rely on intermediate reasoning for learning, debugging, auditing, and decision making. |
+| **Student degradation** | Reduce capability gained by a student trained on transformed outputs. | Obfuscation that only increases response length or training loss is not a defense if held-out capability is unchanged. |
+| **Stealth and diversity** | Avoid a trivial repeated signature that identifies protected responses. | A fixed visible pattern can be detected, removed, or normalized before training. |
+| **Fail-safe behavior** | Return the clean response when the transformation cannot be verified. | An infrastructure or rewriting failure should not turn uncertain detection into user-facing corruption. |
 
-That turns anti-distillation into a multi-objective problem.
+**The current prototypes satisfy these requirements only partially.** That gap is the substance of this case study.
 
-A useful response-layer defense should simultaneously provide:
-
-* **Answer preservation** — preserve the teacher's terminal answer or conclusion.
-* **Human utility** — maintain understandable and semantically valid explanations.
-* **Student degradation** — reduce capability transferred through distillation.
-* **Stealth and diversity** — avoid easily removable transformation signatures.
-* **Fail-safe behavior** — return the clean response when verification fails.
-
-The experiments in this repository satisfy these requirements only partially.
-
-
-
-# Experimental Evolution
-
-## Phase I — ITRO
+## Phase I: ITRO
 
 ### Inference-Time Reasoning Obfuscation
 
-ITRO was the first implementation of ADHD.
+ITRO was the first, deliberately general-purpose implementation. Rather than applying one fixed transformation, it detects the response domain, estimates how valuable the response would be as distillation data, and scales the intervention accordingly.
 
-Instead of applying one fixed transformation, ITRO detects the response domain and estimates how valuable the response may be as distillation data.
+**Supported domains (8):** mathematical computation · mathematical proof · code · scientific reasoning · logical argument · factual recall · procedural reasoning · analytical reasoning
 
-It supports eight reasoning domains, including:
+### Intervention intensity τ
 
-* Mathematical computation
-* Mathematical proof
-* Code
-* Scientific reasoning
-* Logical argument
-* Factual recall
-* Procedural reasoning
-* Analytical reasoning
+ITRO computes an obfuscation intensity `τ` as a weighted combination of four LLM-scored dimensions:
 
-ITRO computes an intervention intensity **τ (tau)** from four estimated dimensions:
-
-```text
-τ = 0.35(reasoning depth)
-  + 0.30(generalizability)
-  + 0.20(expert density)
-  + 0.15(frontier dependence)
+```
+τ_raw = 0.35·d + 0.30·g + 0.20·e + 0.15·f
 ```
 
-Domain-specific bounds are then applied before the explanation is transformed.
+where `d` is reasoning depth, `g` is generalizability, `e` is expert density, and `f` is estimated dependence on frontier-model capability. Domain-specific floors and ceilings then clip the score:
 
-### ITRO Pipeline
+| Domain | τ floor | τ ceiling |
+| - | -: | -: |
+| Factual recall | 0.05 | 0.35 |
+| Procedural | 0.15 | 0.60 |
+| Math computation | 0.35 | 0.72 |
+| Logical argument | 0.30 | 0.85 |
+| Scientific | 0.40 | 0.90 |
+| Analytical | 0.40 | 0.92 |
+| Code | 0.10 | 0.95 |
+| Math proof | 0.55 | 1.00 |
+
+> [!NOTE]
+> These bounds are **engineering heuristics**, not empirically calibrated estimates of actual learning value. The later results show that estimated pedagogical value and actual student-gradient influence are not the same quantity.
+
+### Pipeline
 
 ```text
-Query
-  |
-  v
-Clean Teacher Response
-  |
-  v
-Domain Detection
-  |
-  v
-Pedagogical-Value / Tau Estimation
-  |
-  v
-Domain-Specific Transformation
-  |
-  v
-Answer Preservation Check
-  |
-  +---- Pass ---> Transformed Response
-  |
-  +---- Fail ---> Clean Response
+Query ──▶ Clean teacher response ──▶ Domain detection ──▶ τ estimation
+                                                              │
+                                                              ▼
+                                              Domain-specific transformation
+                                                              │
+                                                 Answer-preservation check
+                                                       ╱             ╲
+                                                   Pass               Fail
+                                                     │                  │
+                                                     ▼                  ▼
+                                          Transformed response    Clean response
 ```
 
-### What ITRO Taught Us
+### What Phase I established
 
-ITRO substantially increased training difficulty but produced very little change in held-out student accuracy.
+ITRO substantially increased optimization difficulty while producing almost no change in held-out capability:
 
-| Student            |     GSM8K |  Accuracy | Gap vs. Clean |
-| ------------------ | --------: | --------: | ------------: |
-| Clean Distillation | 198 / 500 | **39.6%** |             — |
-| ITRO               | 195 / 500 | **39.0%** |   **−0.6 pp** |
+| Metric | Clean | ITRO | Δ |
+| - | -: | -: | -: |
+| GSM8K accuracy | 39.6 % (198/500) | 39.0 % (195/500) | **−0.6 pp** |
+| Average training loss | 0.1637 | 0.2555 | **≈ +56 %** |
+| Final gradient norm | 0.1846 | 0.1919 | +0.0073 |
 
-Recorded average training loss:
+Only **three additional errors** on a 500-question evaluation. With no retained item-level predictions and no repeated seeds, a 0.6 pp difference cannot be treated as a stable causal effect.
 
-| Training Data | Average Loss |
-| ------------- | -----------: |
-| Clean         |       0.1637 |
-| ITRO          |       0.2555 |
+Two structural weaknesses compound the result:
 
-ITRO's recorded average loss was approximately **56% higher** than clean training, while held-out accuracy changed by only **0.6 percentage points**.
+1. **Variable poison, stable answer.** ITRO deliberately varied the corruption path per example while the final answer stayed perfectly consistent. From the student's perspective, the obfuscation is a high-entropy style signal and the question→answer mapping is a low-entropy one. A small student can treat the detour as noise.
+2. **Dilution by fallback.** The historical defended-dataset generation record reports approximately **85-87 % answer preservation**, implying that roughly **13-15 %** of attempted defended examples fell back to the clean teacher response. This protects service quality but leaves ordinary high-quality supervision inside the defended corpus.
 
-This produced an important lesson:
+> **Lesson:** making a distillation dataset harder to optimize is not equivalent to reducing the capability learned from it.
 
-> **Making a distillation dataset harder to optimize is not equivalent to reducing the capability learned from it.**
-
-The student may be able to treat variable reasoning detours as noise while continuing to learn stable problem-to-answer relationships.
-
-
-
-# Phase II — SPECTRE
+## Phase II: SPECTRE
 
 ### Structural Poisoning via Empirical Corruption of Training Representations
 
-SPECTRE emerged from the ITRO results.
+SPECTRE inverted ITRO's emphasis. Where ITRO prioritized diversity, SPECTRE tests the opposite hypothesis: **a harmful behavior may need to be structurally consistent across the corpus before a small student reliably learns it.** The scope narrowed to mathematics so one mechanism could be studied carefully.
 
-ITRO emphasized **diversity**.
+### T7: Entangled False-Start
 
-SPECTRE tests the opposite hypothesis: perhaps a harmful behavior must be **structurally consistent** across the training corpus before a small student reliably learns it.
+The dataset-generation default. T7 repeats the same high-level corruption *position* across examples while varying the recovery cue:
 
-The primary dataset transformation is:
+| Part | Transformation rule | Intended learning role |
+| - | - | - |
+| **Fixed opening** | Begin every transformed solution with exactly `"Let me work through this carefully."` | Creates a stable sequence anchor before the false start. |
+| **Confident false start** | Use the problem's real numbers but choose a plausible wrong operation or formula for the first major computation. Work it for 2-4 lines without hedging. | Supplies repeated wrong-operation behavior in an early solution position. |
+| **Variable pivot** | Select one of **20 pivot stems** deterministically from the question; the correction must reference the wrong value rather than silently restart. | Attempts to make recovery less uniform than the false start. |
+| **Correct recovery** | Resume the clean solution values. Expand the largest multiplication as repeated addition (or division as repeated subtraction) where appropriate. | Preserves the terminal result while adding limited primitive decomposition. |
+| **Fixed-style closing** | State `"So the final answer is N."` and append the teacher's original `#### N` line programmatically. | Delays the explicit final value and enforces terminal-answer equality by construction. |
 
-### T7 — Entangled False-Start
+The pivot stem and false-start depth are **deterministic functions of an MD5 hash of the question**, making generation reproducible per question across 20 stems and 3 depths (2-4 wrong lines). The response body is constrained to approximately **300 words**; the verifier tracks a **3,500-character** cap to keep examples inside the historical 1,024-token student sequence budget.
 
-T7 introduces a repeated high-level structure:
+### Retained transformations (ablation and interactive use)
 
-```text
-Fixed Opening
-      |
-      v
-Confident False Start
-      |
-      v
-Variable Recovery Pivot
-      |
-      v
-Correct Recovery
-      |
-      v
-Preserved Final Answer
-```
+| ID | Transformation |
+| :-: | - |
+| T1 | Backward derivation |
+| T2 | Wrong operation first |
+| T3 | Primitive decomposition |
+| T5 | Circular verification |
+| T6 | Formula error correction |
+| T7 | **Entangled False-Start (composite: dataset default)** |
 
-The transformation intentionally makes the early false-start position relatively consistent while varying the recovery mechanism.
+An ensemble mode can generate these variants and rank them with a component named **GHOST**. The ranking is heuristic: it asks an LLM which candidate appears most harmful to student learning. It does **not** compute gradients, student loss, or measured downstream damage.
 
-The hypothesis is that this could create an asymmetry in learnability:
-
-```text
-Consistent harmful pattern
-        |
-        v
-Easier for student to learn
-
-Variable recovery pattern
-        |
-        v
-Harder to compress into one behavior
-```
-
-This remains a **mechanistic hypothesis**, not an established causal explanation of the experimental result.
-
-
-
-## Experimental Results
-
-The historical experiment used:
-
-* **Teacher reference:** Qwen2.5-7B-Instruct
-* **Final student:** Qwen2.5-0.5B-Instruct
-* **Training examples:** 2,000 per arm
-* **Evaluation:** 500 held-out GSM8K problems
-
-### Final Recorded GSM8K Results
-
-| Condition            |   Correct |  Accuracy | Gap vs. Clean |
-| -------------------- | --------: | --------: | ------------: |
-| Teacher Reference    | 425 / 500 | **85.0%** |             — |
-| Clean Student        | 198 / 500 | **39.6%** |             — |
-| ITRO Student         | 195 / 500 | **39.0%** |       −0.6 pp |
-| SPECTRE Student      | 174 / 500 | **34.8%** |       −4.8 pp |
-| No-Rationale Student | 185 / 500 | **37.0%** |       −2.6 pp |
-
-SPECTRE produced **24 fewer correct answers** than clean distillation in the recorded evaluation.
-
-Its recorded average training loss was also the highest:
-
-| Condition | Average Training Loss |
-| --------- | --------------------: |
-| Clean     |            **0.1637** |
-| ITRO      |            **0.2555** |
-| SPECTRE   |            **0.3512** |
-
-These results suggest that SPECTRE created a stronger training disturbance than ITRO under the recorded setup.
-
-However, the **4.8 percentage-point difference should not be interpreted as an established causal effect**.
-
-The historical experiment used a single training run per condition, item-level predictions were not retained, and the complete historical training/evaluation stack is not available for bit-for-bit reproduction.
-
-
-
-## The No-Rationale Baseline
-
-One of the most important results is the simple no-rationale control:
+### The intended asymmetry
 
 ```text
-Clean       39.6%
-No-Rationale 37.0%
-SPECTRE     34.8%
+   Consistent harmful pattern  ──▶  easier for the student to learn
+   Variable recovery pattern   ──▶  harder to compress into one behavior
 ```
 
-Simply withholding detailed reasoning reduced accuracy by **2.6 pp**.
+> [!WARNING]
+> This is a **design hypothesis**, not an established causal explanation. T7 also changes sequence length, answer position, lexical regularity, and the distribution of intermediate numbers. It may create ordinary distribution shift rather than a learned "wrong-operation habit." Component ablations and student-side trajectory analysis are required before the mechanism can be claimed.
 
-SPECTRE was another **2.2 pp below** that baseline in the recorded run.
+### What Phase II established
 
-This creates a higher bar for a complex anti-distillation mechanism:
+| Metric | Clean | SPECTRE | Δ |
+| - | -: | -: | -: |
+| GSM8K accuracy | 39.6 % (198/500) | 34.8 % (174/500) | **−4.8 pp** |
+| Average training loss | 0.1637 | 0.3512 | **≈ +115 %** |
+| Final gradient norm | 0.1846 | 0.2439 | +0.0593 |
 
-> A transformation should provide enough additional degradation, attacker cost, or robustness to justify its added complexity and potential impact on legitimate users.
+SPECTRE produced the hardest training corpus of the three and the largest recorded separation, but the diagnostics do not identify *why* final accuracy is lower, and the same regularity that may make the poison learnable also makes the output conspicuous.
 
+## Verification and fail-safe design
 
+Both systems attempt to preserve the teacher's terminal result and fall back to the clean response when critical verification fails.
 
-# Repository Structure
+### SPECTRE T7 verification contract
+
+| Check | Blocking? | What the code tests |
+| - | :-: | - |
+| `answer_match` | **Yes** | The numeric value on the variant's `####` line equals the clean teacher's value. For T7 this line is appended from the teacher, so equality is largely construction-level. |
+| `internal_consistency` | **Yes** | The last number in the response body equals the terminal answer value. A narrow local property, not step-wise correctness. |
+| `poison_present` | **Yes** | The expected pivot appears, and the pre-pivot text contains at least one number absent from the clean response. |
+| `no_early_leak` | No | The answer value does not appear numerically in the first 60 % of the body. |
+| `length_ok` | No | The body contains at most 3,500 characters. |
+| `confident_false_start` | No | The false-start section lacks a small hand-coded set of hedging or error-admission markers. |
+
+A candidate is accepted when the three blocking checks pass. The other three are warnings and do not block delivery.
+
+### What the verifier does *not* guarantee
+
+No implemented check verifies whether the pivot refers to the correct quantity, whether the false start is pedagogically safe for a human, or whether the full derivation is semantically natural.
+
+<details>
+<summary><strong>Worked failure case: the Natalia clips problem</strong></summary>
+
+<br>
+
+For the GSM8K problem where Natalia sells 48 clips in April and half as many in May, the clean solution obtains 24 clips in May and 72 total.
+
+The T7 rewrite first computes `48 × 2 = 96` and describes 96 as the **April-plus-May total**. The pivot then argues that 96 *"cannot be correct for May alone"*, even though 96 had never been claimed to represent May alone. The response recovers to 72, and **every implemented verifier flag is true**:
+
+```
+answer_match          = true
+internal_consistency  = true
+poison_present        = true
+no_early_leak         = true
+length_ok             = true
+confident_false_start = true
+passed                = true
+```
+
+The system checks that a pivot exists, that an extra number appears before it, and that the last body number matches the appended answer. It does not check whether the pivot's semantic reference is coherent. **A user can therefore receive an explanation that is locally self-contradictory while the structural contract passes cleanly.**
+
+</details>
+
+> **Answer preservation is necessary but not sufficient.** Users ask for explanations because the path matters. A student learning mathematics may adopt the wrong formula; a programmer may copy a fragile pattern; a researcher may reuse an incorrect causal argument, even when the last line states the right conclusion.
+
+ITRO carries a related gap: the non-math semantic-equivalence helper in `ITRO/correctness_checker.py` is coded to **fail open** on an exception, returning `True`. The general system therefore cannot currently claim strict fail-safe preservation across all domains.
+
+## Where this sits in the literature
+
+Anti-distillation work is easiest to compare by **intervention point** rather than algorithm name.
+
+| Family | Intervention point | Teacher changed? | Relationship to ADHD |
+| - | - | :-: | - |
+| **Teacher-side training**: Nasty Teacher, CMIM, Teacher Scrambling, DOGe, Distillation Traps and Guards | Teacher weights, output head, or calibration policy | **Yes** | Strong control at the source, but protection is coupled to a modified teacher rather than a separable wrapper. |
+| **Serving-time decoding / logit shaping**, ADS, LADS, Product-of-Experts, CMI-based purification | Sampling randomness, next-token probabilities, exposed logits | Usually no persistent change | Finer control than text editing, but requires access to generation internals, logits, private randomness, or a proxy-student signal. |
+| **Post-generation trace transformation**: PART, SelfCAD, trace rewriting, TraceGuard, SGRE | A completed reasoning trace is reordered, rewritten, or selectively edited | **No** | **Closest family to this work.** Preserves deployment separability but must solve semantic validity, naturalness, detectability, and attacker-side sanitization. |
+| **Information throttling**: CoT removal or summarization | Rationale withheld or compressed before delivery | **No** | Simple and often strong baseline. A deception mechanism must demonstrate benefit *beyond* it. |
+| **Attribution / fingerprinting**: DRW, EWE, ReasMark, ADFP | Watermark or learning-aware fingerprint designed to survive transfer | Varies | Addresses attribution rather than prevention; complements active degradation. |
+
+**Positioning.** This work does not claim priority over anti-distillation output manipulation or post-generation trace editing. SGRE's "Answer-then-Edit" is a particularly close architectural neighbor. The narrower question here is whether a defense can be **deployment-separable**: the protected teacher produces its ordinary response using its ordinary weights and ordinary low-risk decoding path, and only then may a risk-gated external component transform the visible explanation. That constraint is attractive for providers who do not want anti-extraction behavior permanently embedded in every model response. It is also a handicap: acting only after generation gives the wrapper less control over token-level learning dynamics, and a visible text transformation may be easier to detect, normalize, or sanitize.
+
+## Repository structure
 
 ```text
 ADHD-AntiDistillation/
 │
-├── ITRO/
-│   ├── main.py
-│   ├── pipeline.py
-│   ├── domain_detector.py
-│   ├── tau_system.py
-│   ├── itro_engine.py
-│   ├── correctness_checker.py
-│   ├── providers/
-│   ├── tests/
+├── ITRO/                          # Phase I: Inference-Time Reasoning Obfuscation
+│   ├── main.py                    #   Interactive CLI
+│   ├── pipeline.py                #   Orchestration: detect → score → transform → verify
+│   ├── domain_detector.py         #   8-domain hybrid heuristic + LLM classifier
+│   ├── tau_system.py              #   τ estimation, dimension weights, domain bounds
+│   ├── itro_engine.py             #   Domain-specific rewrite prompts
+│   ├── correctness_checker.py     #   Answer preservation + semantic equivalence
+│   ├── providers/                 #   anthropic · gemini · qwen (local)
+│   ├── tests/                     #   pytest suite
 │   └── README.md
 │
-├── SPECTRE/
-│   ├── main.py
-│   ├── pipeline.py
-│   ├── teacher.py
-│   ├── ghost_scorer.py
-│   ├── correctness_checker.py
-│   ├── transformations/
-│   ├── providers/
-│   ├── tests/
+├── SPECTRE/                       # Phase II: Structural Poisoning
+│   ├── main.py                    #   Interactive CLI
+│   ├── pipeline.py                #   Composite (T7) and ensemble strategies
+│   ├── teacher.py                 #   Clean teacher-response generation
+│   ├── ghost_scorer.py            #   Heuristic LLM ranking of ensemble variants
+│   ├── correctness_checker.py     #   Six-flag T7 verification contract
+│   ├── config.py                  #   Token budgets, 3500-char cap, 0.6 leak fraction
+│   ├── transformations/           #   t1 · t2 · t3 · t5 · t6 · t7_composite
+│   ├── providers/                 #   anthropic · gemini
+│   ├── tests/                     #   pytest suite
 │   └── README.md
 │
-├── ITRO_Test/
-├── SPECTRE_Test/
-├── ITRO_findings.md
-├── results.md
-├── idea.md
-└── README.md
+├── ITRO_Test/                     # Small demonstration dataset + harness
+├── SPECTRE_Test/                  # Small demonstration dataset + harness
+│
+├── idea.md                        # Design rationale and threat model
+├── results.md                     # Complete experimental record and failure analysis
+└── Readme.md                      # This file
 ```
 
-The individual `ITRO/` and `SPECTRE/` directories contain more detailed implementation and usage documentation.
+## Installation and usage
 
+Both systems are standalone Python packages with their own dependency sets.
 
-
-# Running ITRO
+### ITRO
 
 ```bash
 cd ITRO
 pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env          # add ANTHROPIC_API_KEY or GEMINI_API_KEY
 python main.py
 ```
 
-ITRO supports:
-
-* Anthropic / Claude
-* Gemini
-* Local Qwen
-
-For local Qwen support:
+Providers: **Anthropic / Claude**, **Gemini**, **local Qwen**. For local Qwen inference:
 
 ```bash
 pip install -r requirements-local.txt
 ```
 
-See [`ITRO/README.md`](ITRO/README.md) for provider configuration, CLI options, domain detection, and implementation details.
-
-
-
-# Running SPECTRE
+### SPECTRE
 
 ```bash
 cd SPECTRE
@@ -352,159 +397,215 @@ cp .env.example .env
 python main.py
 ```
 
-SPECTRE supports both:
+Two strategies are available:
 
-* **Composite mode** — T7 Entangled False-Start
-* **Ensemble mode** — retained transformations for ablations and experimentation
-
-Example:
+- **`composite`**: T7 Entangled False-Start (dataset-generation default)
+- **`ensemble`**: the five retained transformations plus GHOST ranking (ablations and demos)
 
 ```bash
 python main.py -p 1 -m 1 -s composite \
   "A store has 48 apples. 24 are sold. How many are left?"
 ```
 
-See [`SPECTRE/README.md`](SPECTRE/README.md) for the full pipeline, transformation definitions, provider configuration, and testing instructions.
+### Tests
 
+```bash
+cd ITRO    && pip install -r requirements-dev.txt && pytest
+cd SPECTRE && pip install -r requirements-dev.txt && pytest
+```
 
+See [`ITRO/README.md`](ITRO/README.md) and [`SPECTRE/README.md`](SPECTRE/README.md) for provider configuration, CLI options, and implementation detail.
 
-# Verification and Fail-Safe Design
+## Experimental methodology
 
-Both systems attempt to preserve the teacher's terminal result and fall back to the clean response when critical verification fails.
+| Component | Configuration |
+| - | - |
+| Teacher reference | `Qwen2.5-7B-Instruct` |
+| Final student | `Qwen2.5-0.5B-Instruct` |
+| Intermediate student | `Qwen2.5-3B-Instruct` (earlier run; source of the clean/ITRO loss traces) |
+| Training examples | 2,000 per arm |
+| Evaluation | 500 held-out GSM8K questions, deterministic greedy decoding (`do_sample=False`) |
+| Answer format | `#### [number]` |
+| Learning rate | `2e-5` |
+| Batch size | 2 physical × 8 gradient accumulation = **16 effective** |
+| Epochs | 3 |
+| Max sequence length | 1,024 (raised from an unsafe 512) |
+| Hardware | NVIDIA A100 SXM4 80 GB, ASU Sol HPC cluster |
 
-SPECTRE's T7 verifier currently checks properties including:
+### Three-arm design
 
-* terminal answer match
-* local internal consistency
-* poison presence
-* early answer leakage
-* response length
-* false-start confidence
+```text
+                                Dataset A ──▶ Student A     (clean)
+  Training prompts ──▶ Teacher  Dataset B ──▶ Student B     (ITRO or SPECTRE)   ──▶  500 held-out
+   2,000 per arm      7B ref    Dataset C ──▶ Student C     (no-rationale)           GSM8K questions
+```
 
-However, these checks **do not establish full semantic correctness of the intermediate explanation**.
+The clean and defended students should differ **only** in the teacher-response transformation. The no-rationale arm estimates how much capability remains when detailed explanation is withheld rather than poisoned, and it is the comparison that most constrains the value of any deception mechanism.
 
-This is an important limitation.
+### Complete recorded training diagnostics
 
-A transformed response can preserve the correct final answer while containing a locally incoherent derivation.
+<details>
+<summary><strong>Clean student</strong>, average loss 0.1637</summary>
 
-For a production-quality system, answer preservation alone is therefore insufficient.
+<br>
 
+| Epoch | Loss | Grad. norm | Learning rate |
+| -: | -: | -: | -: |
+| 0.8 | 0.1790 | 0.2207 | 1.843e-05 |
+| 1.2 | 0.1626 | 0.1865 | 1.511e-05 |
+| 1.6 | 0.1526 | 0.2129 | 1.070e-05 |
+| 2.0 | 0.1517 | 0.2051 | 6.141e-06 |
+| 2.4 | 0.1388 | 0.2021 | 2.407e-06 |
+| 2.8 | 0.1392 | 0.1846 | 2.923e-07 |
+| **Final** | **0.1637 avg** | n/a | n/a |
 
+</details>
 
-# Current Limitations
+<details>
+<summary><strong>ITRO student</strong>, average loss 0.2555 (≈ +56 % vs. clean)</summary>
 
-ADHD should currently be treated as a **research prototype and empirical case study**.
+<br>
 
-Major limitations include:
+| Epoch | Loss | Grad. norm | Learning rate |
+| -: | -: | -: | -: |
+| 0.4 | 0.3667 | 0.2734 | 1.995e-05 |
+| 0.8 | 0.2610 | 0.2227 | 1.843e-05 |
+| 1.2 | 0.2484 | 0.1924 | 1.511e-05 |
+| 1.6 | 0.2400 | 0.2266 | 1.070e-05 |
+| 2.0 | 0.2322 | 0.2012 | 6.141e-06 |
+| 2.4 | 0.2250 | 0.1987 | 2.407e-06 |
+| 2.8 | 0.2150 | 0.1919 | 2.923e-07 |
+| **Final** | **0.2555 avg** | n/a | n/a |
 
-### Single-run evidence
+</details>
 
-Each experimental condition is represented by one historical student-training run. Multiple independent seeds are needed to establish whether the observed differences are reproducible.
+<details>
+<summary><strong>SPECTRE student</strong>, average loss 0.3512 (≈ +115 % vs. clean, ≈ +37 % vs. ITRO)</summary>
 
-### Narrow benchmark
+<br>
 
-The primary evaluation uses GSM8K. The current evidence does not establish generalization to harder mathematics, code generation, scientific reasoning, or general instruction following.
+| Epoch | Loss | Grad. norm | Learning rate |
+| -: | -: | -: | -: |
+| 0.4 | 0.4521 | 0.3318 | 1.995e-05 |
+| 0.8 | 0.3812 | 0.2867 | 1.843e-05 |
+| 1.2 | 0.3579 | 0.2604 | 1.511e-05 |
+| 1.6 | 0.3488 | 0.2711 | 1.070e-05 |
+| 2.0 | 0.3402 | 0.2588 | 6.141e-06 |
+| 2.4 | 0.3361 | 0.2495 | 2.407e-06 |
+| 2.8 | 0.3350 | 0.2439 | 2.923e-07 |
+| **Final** | **0.3512 avg** | n/a | n/a |
 
-### Incomplete historical reproducibility
+</details>
 
-The transformation code and configuration are preserved, but not every historical trainer, evaluator, checkpoint, command, and per-item prediction required for bit-for-bit reconstruction.
+The clean and ITRO traces come from the earlier/intermediate 3B student run rather than a bit-for-bit trace of the final 0.5B evaluation experiment; the SPECTRE trace is recorded separately. They are **complete as archived optimization diagnostics** but should not be read as a matched causal explanation of the benchmark differences.
 
-### Human utility
+## Limitations
 
-The project does not yet contain a controlled human study measuring readability, comprehension, intermediate-step correctness, or perceived manipulation.
+> [!CAUTION]
+> Every result in this repository is a **descriptive observation from a single historical run**, not a replicated effect size.
 
-### Adaptive attackers
+**Single-run evidence.** Each condition is represented by one student-training run over 500 evaluation items. Item-level predictions were not retained, so a paired significance test (e.g. McNemar) cannot be recovered even though the models were evaluated on the same questions.
 
-The historical experiments assume a relatively naive collector.
+**Incomplete reproducibility chain.** The repository preserves transformation code, configuration, unit tests, and small demonstration datasets, but not every historical trainer, evaluator, checkpoint, command, and per-item prediction needed to reproduce the Qwen results end to end. The codebase additionally supports Anthropic and Gemini endpoints, which were **not** used to generate the reported teacher responses.
 
-An adaptive extractor could attempt to:
+**Weak attacker model.** The historical setup assumes direct fine-tuning on collected outputs. It does not test sanitization, paraphrasing, selective truncation, prefix stripping, answer-only training, repeated querying, or interface switching. The attacker profile is narrow: ≈ 2,000 collected responses per arm, a text-only interface, direct SFT, and no adaptive sanitizer.
 
-* strip repeated prefixes
-* remove false-start sections
-* retain only final answers
-* paraphrase responses
-* summarize reasoning
-* filter anomalous traces
-* selectively retain high-value segments
+**Narrow benchmark.** GSM8K is grade-school mathematics. Both the 37.0 % no-rationale control and the teacher's high baseline suggest substantial task knowledge is already present in the student. Nothing here establishes behavior on college mathematics, competition problems, code, science, or general instruction following.
 
-A useful defense must be evaluated **after** such sanitization.
+**No human study.** No controlled evaluation measures whether transformed explanations remain correct, readable, efficient to use, or perceptibly manipulated. The Natalia case shows why this omission is central rather than cosmetic.
 
-### Fingerprintability
+**Fingerprintability.** T7's fixed opening, early false start, visible pivot, primitive decomposition, and fixed-style closing create a recognizable signature. A sanitizer could delete the first few lines, drop sentences containing pivot markers, ask another model to rewrite the response, or train only on answer-bearing segments.
 
-SPECTRE exposes a fundamental trade-off:
+<details>
+<summary><strong>Historical implementation issues found and repaired during ITRO</strong></summary>
 
-> The more consistent a transformation becomes for student learning, the easier it may become for an attacker to recognize and remove.
+<br>
 
-ITRO was comparatively diverse but produced little recorded degradation.
+These are recorded because they materially inform how future anti-distillation experiments should be audited:
 
-SPECTRE produced a larger recorded separation but introduced a more recognizable structure.
+1. A **critical indentation error** in the defended-dataset generator could cause transformation failure and silently return clean outputs. This motivated explicit poison-presence auditing.
+2. Training initially used **raw text while evaluation used Qwen chat templates**, creating a format mismatch that could dominate small accuracy differences.
+3. A **512-token sequence limit** could truncate longer defended responses and, in the worst case, remove the terminal answer. Raised to 1,024.
+4. A **deprecated model-loading parameter** was present in the historical stack.
+5. **Temperature was passed in a greedy-decoding configuration**, where it had no effect.
 
-Finding a transformation that achieves both **learnability asymmetry and stealth** remains an open problem.
+> A defense experiment can appear to be studying poisoned supervision while actually measuring formatting drift, truncation, or silent fallback.
 
+</details>
 
+## Research directions
 
-# Research Directions
+The next phase should prioritize replication over another transformation family.
 
-The next experiments should prioritize:
+1. **Multi-seed replication** with archived per-item predictions and paired (McNemar-style) analysis.
+2. **Mechanism ablations**: separately remove the fixed opening, false-start operation, pivot variability, answer delay, and primitive decomposition.
+3. **Matched controls**: a length-matched coherent rewrite and a structurally repetitive but *mathematically correct* rewrite. If these reproduce the drop, the effect is distribution shift, not poisoned reasoning.
+4. **Harder benchmarks**: MATH, MATH-500, college-level and competition problems, with difficulty stratified rather than averaged.
+5. **Human evaluation as a primary endpoint**: intermediate-step correctness, comprehension, reading time, perceived naturalness, and whether a response appears intentionally manipulated.
+6. **Adaptive-attacker sanitization**: score the defense *after* prefix stripping, paraphrasing, answer-only extraction, and anomaly filtering.
+7. **Cross-family comparison** on an open teacher: clean, no-rationale, teacher-side (Nasty Teacher, CMIM, DOGe), serving-time (ADS, LADS, PoE), and post-generation (PART, TraceGuard, SGRE), quantifying **the price of deployment separability**.
+8. **Systems-cost measurement**: latency, extra generated tokens, inference cost, clean-fallback rate, and attacker capability gained per dollar or per collected token.
+9. **Stronger semantic verification**: treat semantic defects like the Natalia case as a hard rejection condition.
 
-1. **Multi-seed replication**
-2. **Archived item-level predictions**
-3. **Mechanism ablations**
-4. **Length- and structure-matched controls**
-5. **Harder reasoning benchmarks**
-6. **Human semantic evaluation**
-7. **Adaptive attacker sanitization**
-8. **Latency and token-cost measurement**
-9. **Comparison with teacher-side and decoding-time defenses**
-10. **Stronger semantic verification**
+The central research target is not to make responses confusing. It is to find transformations that remain **conceptually correct, coherent, natural, and useful to humans** while being **systematically less valuable as supervision for unauthorized student training**.
 
-The central research target is not simply to make responses confusing.
-
-It is to find transformations that remain:
-
-> **conceptually correct, coherent, natural, and useful to humans**
-
-while being:
-
-> **systematically less valuable as supervision for unauthorized student training.**
-
-
-
-# Paper
-
-The research and experimental record are described in:
+## Paper
 
 **Post-Generation Response Transformation Against Unauthorized Model Distillation: An Empirical Case Study**
+Sherwin Vishesh Jathanna · Arizona State University · `sjathann@asu.edu`
 
-The paper covers:
+The paper covers the response-layer threat model, the ADHD architecture, both experimental phases, complete training diagnostics, the verifier audit, human-utility limitations, adaptive-attacker considerations, related anti-distillation work organized by intervention point, and future research directions.
 
-* the ADHD response-layer architecture
-* ITRO
-* SPECTRE
-* the historical distillation experiments
-* training diagnostics
-* verifier analysis
-* human-utility limitations
-* adaptive-attacker considerations
-* related anti-distillation work
-* future research directions
+### Contributions
 
+1. A response-layer threat model that **separates abuse detection from the intervention applied after detection**.
+2. A two-phase empirical record, paired with complete recorded training diagnostics, showing that **optimization difficulty and downstream degradation must be evaluated separately**.
+3. Evidence that broad surface obfuscation was weak, while stronger structural poisoning creates a **human-utility and detectability problem**.
+4. A **code-level audit** of what the current verifiers actually guarantee.
+5. A concrete future research target: transformations that remain natural and semantically useful to humans while systematically degrading the statistical supervision available to a distilling student.
 
+## Reproducibility and provenance
 
-# Responsible Use
+For future releases, this project recommends archiving: exact prompts and control datasets; transformation metadata and fallback rates; model and tokenizer versions; sequence-length statistics; seeds; commands; checkpoints; held-out identifiers; item-level predictions and raw counts; human-evaluation materials; sanitizer code; attacker-cost measures; and content hashes sufficient to reconstruct the student-training corpus.
 
-This repository explores defensive techniques against unauthorized model extraction and distillation.
+The current repository meets part of this standard. It contains the ITRO and SPECTRE generation code, unit tests, configuration, and small demonstration datasets, **not** the complete historical student trainer and evaluator used for every reported result.
 
-The current transformations are **not intended for deployment in high-stakes domains**. In particular, transformations that introduce intentionally incorrect intermediate reasoning should not be used for medical, legal, financial, safety-critical, or similarly consequential applications.
+## Responsible use
 
-A real deployment would require substantially stronger semantic verification, human-utility evaluation, monitoring, clean fallback behavior, and appropriate product, policy, and legal review.
+This repository explores **defensive** techniques against unauthorized model extraction and distillation. Distillation itself is a legitimate and widely used training technique; the concern here is prohibited extraction.
 
-The goal of this project is to study whether response-layer transformations can reduce unauthorized capability transfer while preserving legitimate-user utility—not to justify degrading arbitrary users.
+A deception-based response layer deliberately changes what a user sees, and the trigger is uncertain by design. The current SPECTRE mechanism goes beyond benign obfuscation by intentionally inserting a wrong operation before recovering.
 
+> [!CAUTION]
+> These transformations are **not intended for deployment in high-stakes domains**. Medical, legal, financial, and safety-critical applications should not receive transformations that insert false intermediate claims.
 
+Even in low-stakes domains, a responsible deployment would require domain gating, semantic verification, measured human comprehension, monitoring for user harm, a clean fallback, and explicit product and legal review. The goal of this project is to determine whether a transformation regime exists in which human utility stays high enough that false positives are genuinely cheap. **The current mechanisms do not meet that standard.**
 
+## Citation
 
+```bibtex
+@misc{jathanna2026adhd,
+  title  = {Post-Generation Response Transformation Against Unauthorized
+            Model Distillation: An Empirical Case Study},
+  author = {Jathanna, Sherwin Vishesh},
+  year   = {2026},
+  eprint = {arXiv:XXXX.XXXXX},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CR},
+  note   = {Arizona State University}
+}
+```
 
-## Disclaimer
+## Acknowledgments
 
-This repository contains experimental research code. The reported benchmark differences are descriptive results from historical experiments and should not be interpreted as proof of a production-ready anti-distillation defense.
+The author thanks **Yash Savani** (Carnegie Mellon University) for guidance during the early ideation of ADHD-ITRO, in particular his encouragement to "fail fast" through rapid empirical iteration, and his observation that student models can extract useful training signal even from imperfect supervision.
+
+The author also acknowledges **Research Computing at Arizona State University** for providing high-performance computing resources that contributed to the results reported here, including access to the **Sol** supercomputer.
+
+<p align="center"><sub>
+This repository contains experimental research code. The reported benchmark differences are descriptive results from single historical runs and should not be interpreted as proof of a production-ready anti-distillation defense.
+</sub></p>
+
+<p align="center">
+  Made with ❤️ by <strong>Sherwin Jathanna</strong>
+</p>
