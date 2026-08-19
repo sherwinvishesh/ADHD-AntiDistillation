@@ -10,7 +10,7 @@
 <meta property="og:description" content="Post-generation response transformation against unauthorized model distillation. Three-arm controlled study, verifier-gated, fail-safe by construction.">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#191817">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 42'%3E%3Cpath d='M8 30 H56' stroke='%236d675f' stroke-width='2.6' stroke-dasharray='3.4 4.4' stroke-linecap='round' fill='none'/%3E%3Cpath d='M8 30 C15 29 21 15 31 10 C40 14 47 22 56 30' stroke='%23d97757' stroke-width='4' stroke-linecap='round' fill='none'/%3E%3Ccircle cx='31' cy='10' r='2.8' fill='%23d97757'/%3E%3Ccircle cx='8' cy='30' r='4' fill='%23a39c92'/%3E%3Ccircle cx='56' cy='30' r='4.4' fill='%23869e86'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 46 48'%3E%3Cpath d='M31.5 9.28 27.25 16.64 18.75 16.64 14.5 9.28 18.75 1.92 27.25 1.92Z' stroke='%236d675f' stroke-width='2' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M44.25 16.64 40 24 31.5 24 27.25 16.64 31.5 9.28 40 9.28Z' stroke='%236d675f' stroke-width='2' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M44.25 31.36 40 38.72 31.5 38.72 27.25 31.36 31.5 24 40 24Z' stroke='%236d675f' stroke-width='2' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M31.5 38.72 27.25 46.08 18.75 46.08 14.5 38.72 18.75 31.36 27.25 31.36Z' stroke='%236d675f' stroke-width='2' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M18.75 31.36 14.5 38.72 6 38.72 1.75 31.36 6 24 14.5 24Z' stroke='%236d675f' stroke-width='2' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M18.75 16.64 14.5 24 6 24 1.75 16.64 6 9.28 14.5 9.28Z' stroke='%236d675f' stroke-width='2' stroke-linejoin='round' fill='none'/%3E%3Cpath d='M31.5 24 27.25 31.36 18.75 31.36 14.5 24 18.75 16.64 27.25 16.64Z' fill='%23d97757'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -112,14 +112,12 @@
   nav.top .container { height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
   .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
   .brand svg { flex: none; display: block; overflow: visible; }
-  .brand .mk-clean { stroke: var(--faint); }
-  .brand .mk-poison { stroke: var(--clay); filter: none; }
-  .brand .mk-ring { display: none; }
-  .brand .mk-in { fill: var(--dim); }
-  .brand .mk-halo { display: none; }
-  .brand .mk-out { fill: var(--sage); }
-  .brand .mk-pivot { fill: var(--clay); }
+  .brand .mk-cell { stroke: var(--faint); stroke-width: 2; fill: none; }
+  .brand .mk-core-ring { display: none; }
+  .brand .mk-core-glow { display: none; }
+  .brand .mk-core { fill: var(--clay); }
   .brand .brand-sub { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); font-weight: 500; padding-left: 10px; margin-left: 2px; border-left: 1px solid var(--border-strong); }
+  .nav-right { display: flex; align-items: center; gap: 24px; }
   .nav-links { display: flex; gap: 26px; font-size: 13.5px; color: var(--muted); }
   .nav-links a { transition: color .18s ease; }
   .nav-links a:hover { color: var(--text); }
@@ -130,7 +128,47 @@
     white-space: nowrap;
   }
   .nav-cta:hover { border-color: var(--clay); color: var(--clay); background: rgba(217,119,87,.06); }
-  @media (max-width: 900px) { .nav-links { display: none; } }
+
+  /* ── mobile nav toggle ───────────────────────────────────  */
+  .nav-toggle {
+    display: none; flex: none; width: 36px; height: 36px;
+    align-items: center; justify-content: center; flex-direction: column; gap: 5px;
+    background: transparent; border: 1px solid var(--border-strong); padding: 0; cursor: pointer;
+  }
+  .nav-toggle-bar { width: 16px; height: 1.5px; background: var(--text); transition: transform .2s ease, opacity .2s ease; }
+  nav.top.is-open .nav-toggle { border-color: var(--clay-dim); }
+  nav.top.is-open .nav-toggle-bar:nth-child(1) { transform: translateY(6.5px) rotate(45deg); }
+  nav.top.is-open .nav-toggle-bar:nth-child(2) { opacity: 0; }
+  nav.top.is-open .nav-toggle-bar:nth-child(3) { transform: translateY(-6.5px) rotate(-45deg); }
+
+  .nav-mobile-panel {
+    display: none; flex-direction: column;
+    position: absolute; top: 60px; left: 0; right: 0; z-index: 59;
+    max-height: calc(100vh - 60px); overflow-y: auto;
+    background: var(--bg-elev); border-bottom: 1px solid var(--border);
+    padding: 6px 20px 20px;
+    box-shadow: 0 18px 32px -12px rgba(0,0,0,.45);
+  }
+  .nav-mobile-panel a {
+    padding: 14px 2px; font-size: 15px; color: var(--muted);
+    border-bottom: 1px dashed var(--border); transition: color .16s ease;
+  }
+  .nav-mobile-panel a:last-child { border-bottom: none; }
+  .nav-mobile-panel a:hover, .nav-mobile-panel a:active { color: var(--clay); }
+  .nav-mobile-git {
+    margin-top: 14px; text-align: center; border-bottom: none !important;
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em;
+    padding: 11px 14px; border: 1px solid var(--border-strong); color: var(--text) !important;
+    transition: border-color .18s ease, background .18s ease, color .18s ease;
+  }
+  .nav-mobile-git:hover { border-color: var(--clay-dim); background: rgba(217,119,87,.06); }
+  nav.top.is-open .nav-mobile-panel { display: flex; }
+
+  @media (max-width: 900px) {
+    .nav-links { display: none; }
+    .nav-cta { display: none; }
+    .nav-toggle { display: inline-flex; }
+  }
   @media (max-width: 460px) { .brand .brand-sub { display: none; } }
 
   /* ── shared type ──────────────────────────────────────── */
@@ -156,13 +194,10 @@
   /* logotype lockup: the gate glyph is the mark, not an ascii banner */
   .lockup { display: flex; align-items: center; gap: clamp(16px, 2.4vw, 30px); }
   .mark-xl { width: clamp(70px, 10.4vw, 124px); height: auto; flex: none; overflow: visible; }
-  .mk-clean { stroke: var(--dim); }
-  .mk-poison { stroke: var(--clay); filter: drop-shadow(0 0 5px rgba(217,119,87,.55)); }
-  .mk-ring  { stroke: var(--clay); opacity: .45; }
-  .mk-in    { fill: var(--muted); }
-  .mk-pivot { fill: var(--clay); }
-  .mk-out   { fill: var(--sage); }
-  .mk-halo  { fill: var(--sage); transform-box: fill-box; transform-origin: center; animation: mkPulse 3.1s ease-in-out infinite; }
+  .mk-cell { stroke: var(--dim); stroke-width: 1.4; fill: none; }
+  .mk-core-ring { stroke: var(--clay); stroke-width: 1; opacity: .45; fill: none; }
+  .mk-core { fill: var(--clay); filter: drop-shadow(0 0 5px rgba(217,119,87,.55)); }
+  .mk-core-glow { fill: var(--clay); opacity: .3; transform-box: fill-box; transform-origin: center; animation: mkPulse 3.1s ease-in-out infinite; }
   @keyframes mkPulse { 0%, 100% { opacity: .30; transform: scale(1); } 50% { opacity: .04; transform: scale(2); } }
 
   .wordmark {
@@ -317,6 +352,7 @@
   /* ── generic grids ────────────────────────────────────── */
   .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
   .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .grid-2 > *, .grid-3 > * { min-width: 0; }
   @media (max-width: 980px) { .grid-3 { grid-template-columns: 1fr; } }
   @media (max-width: 840px) { .grid-2 { grid-template-columns: 1fr; } }
 
@@ -611,41 +647,62 @@
 <nav class="top">
   <div class="container">
     <a href="#top" class="brand">
-      <svg class="brand-mark" width="35" height="22" viewBox="0 0 64 42" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path class="mk-clean"  d="M8 30 H56" stroke-width="2.4" stroke-dasharray="3.4 4.4"/>
-        <path class="mk-poison" d="M8 30 C15 29 21 15 31 10 C40 14 47 22 56 30" stroke-width="3.4"/>
-        <circle class="mk-ring"  cx="31" cy="10" r="5.4" stroke-width="1"/>
-        <circle class="mk-pivot" cx="31" cy="10" r="2.3"/>
-        <circle class="mk-in"    cx="8"  cy="30" r="3.6"/>
-        <circle class="mk-halo"  cx="56" cy="30" r="6.6"/>
-        <circle class="mk-out"   cx="56" cy="30" r="3.9"/>
+      <svg class="brand-mark" width="26" height="27" viewBox="0 0 46 48" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path class="mk-core-glow" d="M35.75,24 L29.38,35.04 L16.63,35.04 L10.25,24 L16.63,12.96 L29.38,12.96 Z"/>
+        <path class="mk-cell" d="M31.5,9.28 L27.25,16.64 L18.75,16.64 L14.5,9.28 L18.75,1.92 L27.25,1.92 Z"/>
+        <path class="mk-cell" d="M44.25,16.64 L40,24 L31.5,24 L27.25,16.64 L31.5,9.28 L40,9.28 Z"/>
+        <path class="mk-cell" d="M44.25,31.36 L40,38.72 L31.5,38.72 L27.25,31.36 L31.5,24 L40,24 Z"/>
+        <path class="mk-cell" d="M31.5,38.72 L27.25,46.08 L18.75,46.08 L14.5,38.72 L18.75,31.36 L27.25,31.36 Z"/>
+        <path class="mk-cell" d="M18.75,31.36 L14.5,38.72 L6,38.72 L1.75,31.36 L6,24 L14.5,24 Z"/>
+        <path class="mk-cell" d="M18.75,16.64 L14.5,24 L6,24 L1.75,16.64 L6,9.28 L14.5,9.28 Z"/>
+        <path class="mk-core-ring" d="M34.05,24 L28.53,33.57 L17.48,33.57 L11.95,24 L17.48,14.43 L28.53,14.43 Z"/>
+        <path class="mk-core" d="M31.5,24 L27.25,31.36 L18.75,31.36 L14.5,24 L18.75,16.64 L27.25,16.64 Z"/>
       </svg>
       ADHD<span class="brand-sub">Anti-Distillation</span>
     </a>
-    <div class="nav-links">
-      <a href="#overview">Overview</a>
-      <a href="#architecture">Architecture</a>
-      <a href="#results">Results</a>
-      <a href="#training">Training</a>
-      <a href="#tau">Intensity</a>
-      <a href="#verification">Verification</a>
-      <a href="#replicate">Replicate</a>
+    <div class="nav-right">
+      <div class="nav-links">
+        <a href="#overview">Overview</a>
+        <a href="#architecture">Architecture</a>
+        <a href="#results">Results</a>
+        <a href="#training">Training</a>
+        <a href="#tau">Intensity</a>
+        <a href="#verification">Verification</a>
+        <a href="#replicate">Replicate</a>
+      </div>
+      <a href="https://github.com/sherwinvishesh/ADHD-AntiDistillation" class="nav-cta" target="_blank" rel="noopener">GitHub ↗</a>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-mobile-panel" aria-label="Toggle navigation menu">
+        <span class="nav-toggle-bar"></span>
+        <span class="nav-toggle-bar"></span>
+        <span class="nav-toggle-bar"></span>
+      </button>
     </div>
-    <a href="https://github.com/sherwinvishesh/ADHD-AntiDistillation" class="nav-cta" target="_blank" rel="noopener">GitHub ↗</a>
+  </div>
+  <div class="nav-mobile-panel" id="nav-mobile-panel">
+    <a href="#overview">Overview</a>
+    <a href="#architecture">Architecture</a>
+    <a href="#results">Results</a>
+    <a href="#training">Training</a>
+    <a href="#tau">Intensity</a>
+    <a href="#verification">Verification</a>
+    <a href="#replicate">Replicate</a>
+    <a href="https://github.com/sherwinvishesh/ADHD-AntiDistillation" class="nav-mobile-git" target="_blank" rel="noopener">GitHub ↗</a>
   </div>
 </nav>
 
 <section class="hero" id="top">
   <div class="container">
     <div class="lockup reveal">
-      <svg class="mark-xl" viewBox="0 0 64 42" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path class="mk-clean"  d="M8 30 H56" stroke-width="2" stroke-dasharray="3.4 4.4"/>
-        <path class="mk-poison" d="M8 30 C15 29 21 15 31 10 C40 14 47 22 56 30" stroke-width="3"/>
-        <circle class="mk-ring"  cx="31" cy="10" r="5.4" stroke-width="1"/>
-        <circle class="mk-pivot" cx="31" cy="10" r="2.3"/>
-        <circle class="mk-in"    cx="8"  cy="30" r="3.6"/>
-        <circle class="mk-halo"  cx="56" cy="30" r="6.6"/>
-        <circle class="mk-out"   cx="56" cy="30" r="3.9"/>
+      <svg class="mark-xl" viewBox="0 0 46 48" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path class="mk-core-glow" d="M35.75,24 L29.38,35.04 L16.63,35.04 L10.25,24 L16.63,12.96 L29.38,12.96 Z"/>
+        <path class="mk-cell" d="M31.5,9.28 L27.25,16.64 L18.75,16.64 L14.5,9.28 L18.75,1.92 L27.25,1.92 Z"/>
+        <path class="mk-cell" d="M44.25,16.64 L40,24 L31.5,24 L27.25,16.64 L31.5,9.28 L40,9.28 Z"/>
+        <path class="mk-cell" d="M44.25,31.36 L40,38.72 L31.5,38.72 L27.25,31.36 L31.5,24 L40,24 Z"/>
+        <path class="mk-cell" d="M31.5,38.72 L27.25,46.08 L18.75,46.08 L14.5,38.72 L18.75,31.36 L27.25,31.36 Z"/>
+        <path class="mk-cell" d="M18.75,31.36 L14.5,38.72 L6,38.72 L1.75,31.36 L6,24 L14.5,24 Z"/>
+        <path class="mk-cell" d="M18.75,16.64 L14.5,24 L6,24 L1.75,16.64 L6,9.28 L14.5,9.28 Z"/>
+        <path class="mk-core-ring" d="M34.05,24 L28.53,33.57 L17.48,33.57 L11.95,24 L17.48,14.43 L28.53,14.43 Z"/>
+        <path class="mk-core" d="M31.5,24 L27.25,31.36 L18.75,31.36 L14.5,24 L18.75,16.64 L27.25,16.64 Z"/>
       </svg>
       <div>
         <div class="wordmark">ADHD</div>
@@ -673,7 +730,7 @@
     <div class="hero-ctas reveal">
       <a href="#results" class="btn btn-primary btn-glow">See the results <span class="arrow">→</span></a>
       <a href="#replicate" class="btn">Run it yourself</a>
-      <a href="https://github.com/sherwinvishesh/ADHD-AntiDistillation" class="btn" target="_blank" rel="noopener">Source <span class="arrow">↗</span></a>
+      <a href="#" class="btn">arXiv <span class="arrow">↗</span></a>
     </div>
 
 
@@ -1719,29 +1776,10 @@ answer_format  = <span class="s">"#### [number]"</span></pre>
       </p>
     </div>
 
-    <div class="code-block reveal">
-      <div class="code-header">
-        <span>bibtex</span>
-        <span class="tail">arXiv preprint</span>
-        <button class="copy-btn" type="button" data-copy="@misc{jathanna2026adhd,
-  title  = {Post-Generation Response Transformation Against Unauthorized Model Distillation: An Empirical Case Study},
-  author = {Jathanna, Sherwin Vishesh},
-  year   = {2026},
-  eprint = {XXXX.XXXXX},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.LG}
-}">copy</button>
-      </div>
-<pre class="code-body"><span class="k">@misc</span>{<span class="v">jathanna2026adhd</span>,
-  <span class="p">title</span>  = {<span class="s">Post-Generation Response Transformation Against Unauthorized
-            Model Distillation: An Empirical Case Study</span>},
-  <span class="p">author</span> = {<span class="s">Jathanna, Sherwin Vishesh</span>},
-  <span class="p">year</span>   = {<span class="v">2026</span>},
-  <span class="p">eprint</span> = {<span class="v">XXXX.XXXXX</span>},
-  <span class="p">archivePrefix</span> = {<span class="s">arXiv</span>},
-  <span class="p">primaryClass</span>  = {<span class="s">cs.LG</span>}
-}</pre>
-      </div>
+    <div class="callout reveal">
+      <div class="callout-title">Citation</div>
+      <p>Citation coming soon.</p>
+    </div>
 
     <div class="grid-3 reveal" style="margin-top: 32px;">
       <div class="panel">
@@ -1780,14 +1818,16 @@ answer_format  = <span class="s">"#### [number]"</span></pre>
     <div class="footer-grid">
       <div class="footer-brand">
         <a href="#top" class="brand">
-          <svg class="brand-mark" width="32" height="20" viewBox="0 0 64 42" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path class="mk-clean"  d="M8 30 H56" stroke-width="2.4" stroke-dasharray="3.4 4.4"/>
-        <path class="mk-poison" d="M8 30 C15 29 21 15 31 10 C40 14 47 22 56 30" stroke-width="3.4"/>
-        <circle class="mk-ring"  cx="31" cy="10" r="5.4" stroke-width="1"/>
-        <circle class="mk-pivot" cx="31" cy="10" r="2.3"/>
-        <circle class="mk-in"    cx="8"  cy="30" r="3.6"/>
-        <circle class="mk-halo"  cx="56" cy="30" r="6.6"/>
-        <circle class="mk-out"   cx="56" cy="30" r="3.9"/>
+          <svg class="brand-mark" width="24" height="25" viewBox="0 0 46 48" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path class="mk-core-glow" d="M35.75,24 L29.38,35.04 L16.63,35.04 L10.25,24 L16.63,12.96 L29.38,12.96 Z"/>
+        <path class="mk-cell" d="M31.5,9.28 L27.25,16.64 L18.75,16.64 L14.5,9.28 L18.75,1.92 L27.25,1.92 Z"/>
+        <path class="mk-cell" d="M44.25,16.64 L40,24 L31.5,24 L27.25,16.64 L31.5,9.28 L40,9.28 Z"/>
+        <path class="mk-cell" d="M44.25,31.36 L40,38.72 L31.5,38.72 L27.25,31.36 L31.5,24 L40,24 Z"/>
+        <path class="mk-cell" d="M31.5,38.72 L27.25,46.08 L18.75,46.08 L14.5,38.72 L18.75,31.36 L27.25,31.36 Z"/>
+        <path class="mk-cell" d="M18.75,31.36 L14.5,38.72 L6,38.72 L1.75,31.36 L6,24 L14.5,24 Z"/>
+        <path class="mk-cell" d="M18.75,16.64 L14.5,24 L6,24 L1.75,16.64 L6,9.28 L14.5,9.28 Z"/>
+        <path class="mk-core-ring" d="M34.05,24 L28.53,33.57 L17.48,33.57 L11.95,24 L17.48,14.43 L28.53,14.43 Z"/>
+        <path class="mk-core" d="M31.5,24 L27.25,31.36 L18.75,31.36 L14.5,24 L18.75,16.64 L27.25,16.64 Z"/>
       </svg>
           ADHD
         </a>
@@ -1921,6 +1961,35 @@ answer_format  = <span class="s">"#### [number]"</span></pre>
     Object.keys(links).forEach(function (id) {
       var el = document.getElementById(id);
       if (el) spy.observe(el);
+    });
+  }
+
+  /* ── mobile nav toggle ─────────────────────────────────── */
+  var navEl = document.querySelector("nav.top");
+  var navToggle = document.querySelector(".nav-toggle");
+  var navPanel = document.getElementById("nav-mobile-panel");
+
+  if (navEl && navToggle && navPanel) {
+    var closeNav = function () {
+      navEl.classList.remove("is-open");
+      navToggle.setAttribute("aria-expanded", "false");
+    };
+
+    navToggle.addEventListener("click", function () {
+      var open = navEl.classList.toggle("is-open");
+      navToggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+
+    Array.prototype.forEach.call(navPanel.querySelectorAll("a"), function (a) {
+      a.addEventListener("click", closeNav);
+    });
+
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") closeNav();
+    });
+
+    document.addEventListener("click", function (e) {
+      if (navEl.classList.contains("is-open") && !navEl.contains(e.target)) closeNav();
     });
   }
 })();
