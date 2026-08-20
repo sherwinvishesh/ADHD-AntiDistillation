@@ -583,18 +583,7 @@ Even in low-stakes domains, a responsible deployment would require domain gating
 
 ## Citation
 
-```bibtex
-@misc{jathanna2026adhd,
-  title  = {Post-Generation Response Transformation Against Unauthorized
-            Model Distillation: An Empirical Case Study},
-  author = {Jathanna, Sherwin Vishesh},
-  year   = {2026},
-  eprint = {arXiv:XXXX.XXXXX},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CR},
-  note   = {Arizona State University}
-}
-```
+Citation coming soon.
 
 ## Acknowledgments
 
