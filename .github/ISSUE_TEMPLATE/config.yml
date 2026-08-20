@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/sherwinvishesh/ADHD-AntiDistillation/security/policy
+    about: Please report ordinary code vulnerabilities privately — see SECURITY.md, do not open a public issue.
+  - name: Question about the paper or results
+    url: mailto:sjathann@asu.edu
+    about: For questions about the methodology, results, or the paper itself.
