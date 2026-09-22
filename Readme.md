@@ -6,7 +6,9 @@
 </p>
 
 <p align="center">
-  <a href="#paper"><img alt="Paper" src="https://img.shields.io/badge/paper-arXiv%20preprint-b31b1b"></a>
+  <a href="https://doi.org/10.5281/zenodo.22886269">
+  <img alt="Zenodo" src="https://img.shields.io/badge/paper-Zenodo-1682D4">
+</a>
   <a href="#reproducibility-and-provenance"><img alt="Status" src="https://img.shields.io/badge/status-research%20prototype-orange"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-3776ab">
   <img alt="Benchmark" src="https://img.shields.io/badge/benchmark-GSM8K%20(500%20held--out)-4c1">
@@ -583,7 +585,26 @@ Even in low-stakes domains, a responsible deployment would require domain gating
 
 ## Citation
 
-Citation coming soon.
+If you use or build on this work, please cite:
+
+**MLA**
+
+> Sherwin Vishesh Jathanna. “Post-Generation Response Transformation Against Unauthorized Model Distillation: An Empirical Case Study”. Version 1.0, Zenodo, 22 Sept. 2026. https://doi.org/10.5281/zenodo.22886269
+
+**BibTeX**
+
+```bibtex
+@misc{jathanna2026postgeneration,
+  author       = {Jathanna, Sherwin Vishesh},
+  title        = {Post-Generation Response Transformation Against Unauthorized Model Distillation: An Empirical Case Study},
+  year         = {2026},
+  month        = sep,
+  howpublished = {Zenodo},
+  note         = {Version 1.0},
+  doi          = {10.5281/zenodo.22886269},
+  url          = {https://doi.org/10.5281/zenodo.22886269}
+}
+```
 
 ## Acknowledgments
 
