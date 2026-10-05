@@ -640,6 +640,17 @@
     .diverge figcaption { padding: 14px 16px; }
     .panel-body { padding: 20px 16px; }
   }
+
+  .cite-box { border: 1px solid var(--border-strong); background: var(--bg-elev); }
+  .cite-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .cite-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+  .cite-tab, .cite-copy { font-family: var(--font-mono); font-size: 12px; letter-spacing: .06em; color: var(--muted); background: transparent; border: 1px solid transparent; padding: 8px 14px; cursor: pointer; transition: color .15s, border-color .15s, background .15s; }
+  .cite-tab:hover, .cite-copy:hover { color: var(--text); }
+  .cite-tab.active { color: var(--clay-soft); border-color: var(--clay-dim); background: var(--clay-glow); }
+  .cite-copy { border-color: var(--border-strong); }
+  .cite-copy.done { color: var(--sage); border-color: var(--sage); }
+  .cite-body { margin: 0; padding: 24px; font-family: var(--font-mono); font-size: 13px; line-height: 1.8; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; min-height: 120px; }
+  .cite-body.prose { font-family: var(--font-sans); font-size: 15px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -730,7 +741,7 @@
     <div class="hero-ctas reveal">
       <a href="#results" class="btn btn-primary btn-glow">See the results <span class="arrow">→</span></a>
       <a href="#replicate" class="btn">Run it yourself</a>
-      <a href="#" class="btn">arXiv <span class="arrow">↗</span></a>
+      <a href="https://zenodo.org/records/22886269" class="btn" target="_blank" rel="noopener">Zenodo <span class="arrow">↗</span></a>
     </div>
 
 
@@ -1776,9 +1787,20 @@ answer_format  = <span class="s">"#### [number]"</span></pre>
       </p>
     </div>
 
-    <div class="callout reveal">
-      <div class="callout-title">Citation</div>
-      <p>Citation coming soon.</p>
+    <div class="cite-box reveal">
+      <div class="cite-bar">
+        <div class="cite-tabs" role="tablist" id="cite-tabs">
+          <button class="cite-tab active" role="tab" data-fmt="bibtex">BibTeX</button>
+          <button class="cite-tab" role="tab" data-fmt="apa">APA</button>
+          <button class="cite-tab" role="tab" data-fmt="mla">MLA</button>
+          <button class="cite-tab" role="tab" data-fmt="chicago">Chicago</button>
+          <button class="cite-tab" role="tab" data-fmt="ieee">IEEE</button>
+          <button class="cite-tab" role="tab" data-fmt="harvard">Harvard</button>
+          <button class="cite-tab" role="tab" data-fmt="ris">RIS</button>
+        </div>
+        <button class="cite-copy" id="cite-copy" type="button">Copy</button>
+      </div>
+      <pre class="cite-body" id="cite-body"></pre>
     </div>
 
     <div class="grid-3 reveal" style="margin-top: 32px;">
@@ -1993,6 +2015,45 @@ answer_format  = <span class="s">"#### [number]"</span></pre>
     });
   }
 })();
+
+  (function () {
+    var T = "Post-Generation Response Transformation Against Unauthorized Model Distillation: An Empirical Case Study";
+    var U = "https://doi.org/10.5281/zenodo.22886269";
+    var F = {
+      bibtex: { prose: false, text: "@misc{jathanna2026postgeneration,\n  author       = {Jathanna, Sherwin Vishesh},\n  title        = {" + T + "},\n  year         = {2026},\n  month        = sep,\n  howpublished = {Zenodo},\n  note         = {Version 1.0},\n  doi          = {10.5281/zenodo.22886269},\n  url          = {" + U + "}\n}" },
+      apa: { prose: true, text: "Jathanna, S. V. (2026). " + T + " (Version 1.0) [Preprint]. Zenodo. " + U },
+      mla: { prose: true, text: "Jathanna, Sherwin Vishesh. \u201c" + T + ".\u201d Version 1.0, Zenodo, 22 Sept. 2026, " + U + "." },
+      chicago: { prose: true, text: "Jathanna, Sherwin Vishesh. 2026. \u201c" + T + ".\u201d Version 1.0. Zenodo. September 22, 2026. " + U + "." },
+      ieee: { prose: true, text: "[1] S. V. Jathanna, \u201c" + T + ",\u201d Zenodo, Version 1.0, Sep. 22, 2026. doi: 10.5281/zenodo.22886269." },
+      harvard: { prose: true, text: "Jathanna, S.V. (2026) " + T + ". Version 1.0. Zenodo. Available at: " + U + " (Accessed: 4 October 2026)." },
+      ris: { prose: false, text: "TY  - GEN\nAU  - Jathanna, Sherwin Vishesh\nTI  - " + T + "\nPY  - 2026\nDA  - 2026/09/22\nPB  - Zenodo\nET  - 1.0\nDO  - 10.5281/zenodo.22886269\nUR  - " + U + "\nER  - " }
+    };
+    var body = document.getElementById("cite-body");
+    var tabs = document.querySelectorAll(".cite-tab");
+    var copy = document.getElementById("cite-copy");
+    var current = "bibtex";
+    function show(k) {
+      current = k;
+      body.textContent = F[k].text;
+      body.classList.toggle("prose", F[k].prose);
+      tabs.forEach(function (t) { t.classList.toggle("active", t.dataset.fmt === k); });
+    }
+    tabs.forEach(function (t) { t.addEventListener("click", function () { show(t.dataset.fmt); }); });
+    copy.addEventListener("click", function () {
+      var done = function () {
+        copy.textContent = "Copied"; copy.classList.add("done");
+        setTimeout(function () { copy.textContent = "Copy"; copy.classList.remove("done"); }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(F[current].text).then(done);
+      } else {
+        var r = document.createRange(); r.selectNodeContents(body);
+        var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        document.execCommand("copy"); sel.removeAllRanges(); done();
+      }
+    });
+    show("bibtex");
+  })();
 </script>
 </body>
 </html>
